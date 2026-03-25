@@ -6,12 +6,13 @@
 #include <functional>
 #include <queue>
 #include <vector>
+#include <array>
 
 
 
 class Point {
 public:
-    double coords[2];
+    std::array<double, 2> coords;
     int id;
 
     Point() : coords{0.0, 0.0}, id(-1) {}
@@ -21,8 +22,9 @@ public:
 class KdNode {
 public:
     Point point;
-    std::unique_ptr<KdNode> Left;
+    std::unique_ptr<KdNode> Left;   
     std::unique_ptr<KdNode> Right;
+    BoundingBox box;
     int size;
     int total;
     bool is_deleted;
@@ -53,10 +55,62 @@ class KnnEntry {
 };
 using KnnPQ = std::priority_queue<KnnEntry, std::vector<KnnEntry>, std::less<KnnEntry>>;
 
+class BoundingBox {
+public:
+    std::array<double, 2> min_coords;
+    std::array<double, 2> max_coords;
+    
+    BoundingBox() {
+        min_coords.fill(0x3f3f3f3f);
+        max_coords.fill(-0x3f3f3f3f);
+    }
+
+    explicit BoundingBox(const Point& p) {
+        min_coords = p.coords;
+        max_coords = p.coords;
+    }
+
+    void extend(const Point& p) {
+        for(auto& x : p.coords) {
+            min_coords = std::min(min_coords, x);
+            max_coords = std::max(max_coords, x);
+        }
+    }
+
+    void extend(const BoundingBox& other) {
+        for(auto& x : other.min_coords) min_coords = std::min(min_coords, x);
+        for(auto& x : other.max_coords) max_coords = std::max(max_coords, x);
+    }
+
+    double min_dist_sq(const Point& target) const {
+        double dist = 0;
+        for(int i = 0; i < 2; i ++) {
+            double d = std::max({0.0, target.coords[i] - min_coords[i], max_coords[i] - target.coords[i]});
+            dist += d * d;
+        }
+        return dist;
+    }
+};
 
 class Kd_Tree {
 private:
     static constexpr double ALPHA = 0.75;
+
+    static int get_total(const std::unique_ptr<KdNode>& p) { return p ? p->total : 0; }
+    static int get_size(const std::unique_ptr<KdNode>& p) { return p ? p->size : 0; }
+
+    static bool is_unbalanced(const KdNode* node) {
+        if(!node) return false;
+        int L_total = get_total(node->Left);
+        int R_total = get_total(node->Right);
+    
+        return (L_total > ALPHA * node->total + 1 || R_total > ALPHA * node->total + 1);
+    }
+
+    static bool is_valid(const KdNode* node) {
+        if(!node) return false;
+        return node->size < (1.0 - ALPHA) * node->total;
+    }
 public: 
     KdNode* build(std::vector<Point>& pts, int l, int r, int depth) {
         if (l > r) return nullptr;
@@ -73,22 +127,24 @@ public:
         return node;
     }
     
-    void flatten(std::unique_ptr<KdNode> node, std::vector<Point>& pts) {
+    void flatten(const KdNode* node, std::vector<Point>& pts) {
         if(!node) return;
         if(!node->is_deleted) pts.push_back(node->point);
         
-        flatten(std::move(node->Left), pts);
-        flatten(std::move(node->Right), pts);
+        flatten(node->Left.get(), pts);
+        flatten(node->Right.get(), pts);
     }
 
-    std::unique_ptr<KdNode> rebuild(std::unique_ptr<KdNode> node, int depth) {
+    std::unique_ptr<KdNode> rebuild(unique_ptr<KdNode> node, int depth) {
         std::vector<Point> pts;
-        flatten(std::move(node), pts);
+        flatten(node.get(), pts);
         return build(pts, 0, (int)pts.size() - 1, depth);
     }
 
-    void knn_search(std::unique_ptr<kdNode> node, const Point& target, int k, int depth, KnnHeap& heap) {
+    void knn_search(const KdNode* node, const Point& target, int k, int depth, KnnHeap& heap) {
         if(!node) return;
+        if(heap.size() == k && node->box.dist_sq(target) >= heap.top().dst) return;
+        
         if(!node->deleted) {
             double d = Dist_Calculateor::dist_sq(node->point, target);
             if(heap.size() < k) heap.push({d, node->point});
@@ -101,9 +157,40 @@ public:
         int d = !(depth & 1); 
         double diff = target.coords[d] - node->point.coords[d];
         
-        std::unique_ptr near_child = (diff <= 0) ? node->Left : node->Right;
-        std::unique_ptr far_child = (diff <= 0) ? node->Right : node->Left;
+        KdNode* near_child = (diff <= 0) ? node->Left.get() : node->Right.get();
+        KdNode* far_child = (diff <= 0) ? node->Right.get() : node->Left.get();
+        if(near_child->box.dist_sq(target) < heap.top().dst) knn_search(near_child, target, k, depth + 1, heap);
+        if(far_child->box.dist_sq(target) < heap.top().dst) knn_search(far_child, target, k, depth + 1, heap);
+    }
+    
+    std::unique_ptr<KdNode> insert(std::unique_ptr<KdNode> node, const Point& p, int depth, bool need_rebuild) {
+        if(!node) return std::make_unique<KdNode>(p);
         
-        
-    } 
+        int d = !(depth & 1);
+        if(p.coords[d] <= node->point.coords[d]) {
+            node->Left = insert(std::move(node->Left), p, depth + 1, need_rebuild);
+        } else node->Right = insert(std::move(node->Right), p, depth + 1, need_rebuild);
+
+        node->update_all_info();
+        if(is_unbalanced(node.get())) return rebuild(std::move(node), depth);
+        return std::move(node);
+    }
+
+    std::unique_ptr<KdNode> lazy_remove(std::unique_ptr<KdNode> node, const Point& target, int depth) {
+        if(!node) return nullptr;
+
+        int d = !(depth & 1);
+        if(node->point.id == target.id) {
+            node->is_deleted = true;
+            node->update_all_info();
+            return std::move(node);    
+        }
+
+        if(target.coords[d] <= node->point.coords[d]) node->Left = lazy_remove(std::move(node->Left), target, depth + 1);
+        else node->Right = lazy_remove(std::move(node->Right), target, depth + 1);
+        node->update_all_info();
+
+        if(is_valid(node.get())) return rebuild(std::move(node), depth);
+        return std::move(node);
+    }
 };
