@@ -9,7 +9,6 @@
 #include <queue>
 #include <vector>
 
-
 class Point {
 public:
   std::array<double, 2> coords;
@@ -72,25 +71,25 @@ public:
   KdNode()
       : Left(nullptr), Right(nullptr), size(0), total(0), is_deleted(false) {}
   KdNode(const Point &a)
-      : point(a), Left(nullptr), Right(nullptr), size(1), total(1),
-        is_deleted(false), box(a) {}
+      : point(a), Left(nullptr), Right(nullptr), box(a), size(1), total(1),
+        is_deleted(false) {}
 
-    void update_all_info() {
-        size = is_deleted ? 0 : 1;
-        total = 1;
-        box = BoundingBox(point);
+  void update_all_info() {
+    size = is_deleted ? 0 : 1;
+    total = 1;
+    box = BoundingBox(point);
 
-        if (Left) {
-            size += Left->size;
-            total += Left->total;
-            box.extend(Left->box);
-        }
-        if (Right) {
-            size += Right->size;
-            total += Right->total;
-            box.extend(Right->box);
-        }
+    if (Left) {
+      size += Left->size;
+      total += Left->total;
+      box.extend(Left->box);
     }
+    if (Right) {
+      size += Right->size;
+      total += Right->total;
+      box.extend(Right->box);
+    }
+  }
 };
 
 class Dist_Calculateor {
@@ -157,7 +156,7 @@ public:
     auto node = std::make_unique<KdNode>(pts[mid]);
     node->Left = build(pts, l, mid - 1, depth + 1);
     node->Right = build(pts, mid + 1, r, depth + 1);
-    return std::move(node);
+    return node;
   }
 
   void flatten(const KdNode *node, std::vector<Point> &pts) {
@@ -180,12 +179,13 @@ public:
                   KnnPQ &heap) {
     if (!node)
       return;
-    if (heap.size() == k && node->box.min_dist_sq(target) >= heap.top().dist)
+    if (heap.size() == static_cast<std::size_t>(k) &&
+        node->box.min_dist_sq(target) >= heap.top().dist)
       return;
 
     if (!node->is_deleted) {
       double d = Dist_Calculateor::dist_sq(node->point, target);
-      if (heap.size() < k)
+      if (heap.size() < static_cast<std::size_t>(k))
         heap.push({d, node->point});
       else if (d < heap.top().dist) {
         heap.pop();
@@ -218,7 +218,7 @@ public:
     node->update_all_info();
     if (is_unbalanced(node.get()))
       return rebuild(std::move(node), depth);
-    return std::move(node);
+    return node;
   }
 
   std::unique_ptr<KdNode> lazy_remove(std::unique_ptr<KdNode> node,
@@ -230,7 +230,7 @@ public:
     if (node->point.id == target.id) {
       node->is_deleted = true;
       node->update_all_info();
-      return std::move(node);
+      return node;
     }
 
     if (target.coords[d] <= node->point.coords[d])
@@ -241,6 +241,8 @@ public:
 
     if (is_valid(node.get()))
       return rebuild(std::move(node), depth);
-    return std::move(node);
+    return node;
   }
 };
+
+#endif // HAND_KD_TREE
