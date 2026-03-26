@@ -73,7 +73,24 @@ public:
       : Left(nullptr), Right(nullptr), size(0), total(0), is_deleted(false) {}
   KdNode(const Point &a)
       : point(a), Left(nullptr), Right(nullptr), size(1), total(1),
-        is_deleted(false) {}
+        is_deleted(false), box(a) {}
+
+    void update_all_info() {
+        size = is_deleted ? 0 : 1;
+        total = 1;
+        box = BoundingBox(point);
+
+        if (Left) {
+            size += Left->size;
+            total += Left->total;
+            box.extend(Left->box);
+        }
+        if (Right) {
+            size += Right->size;
+            total += Right->total;
+            box.extend(Right->box);
+        }
+    }
 };
 
 class Dist_Calculateor {
