@@ -50,8 +50,9 @@ public:
   double min_dist_sq(const Point &target) const {
     double dist = 0;
     for (int i = 0; i < 2; i++) {
-      double d = std::max({0.0, target.coords[i] - min_coords[i],
-                           max_coords[i] - target.coords[i]});
+      double clamped =
+          std::max(min_coords[i], std::min(target.coords[i], max_coords[i]));
+      double d = target.coords[i] - clamped;
       dist += d * d;
     }
     return dist;
@@ -136,7 +137,7 @@ private:
             R_total > ALPHA * node->total + 1);
   }
 
-  static bool is_valid(const KdNode *node) {
+  static bool needs_rebuild(const KdNode *node) {
     if (!node)
       return false;
     return node->size < (1.0 - ALPHA) * node->total;
@@ -156,6 +157,7 @@ public:
     auto node = std::make_unique<KdNode>(pts[mid]);
     node->Left = build(pts, l, mid - 1, depth + 1);
     node->Right = build(pts, mid + 1, r, depth + 1);
+    node->update_all_info();
     return node;
   }
 
@@ -198,9 +200,13 @@ public:
 
     KdNode *near_child = (diff <= 0) ? node->Left.get() : node->Right.get();
     KdNode *far_child = (diff <= 0) ? node->Right.get() : node->Left.get();
-    if (near_child->box.min_dist_sq(target) < heap.top().dist)
+
+    if (near_child && (heap.size() < static_cast<std::size_t>(k) ||
+                       near_child->box.min_dist_sq(target) < heap.top().dist))
       knn_search(near_child, target, k, depth + 1, heap);
-    if (far_child->box.min_dist_sq(target) < heap.top().dist)
+
+    if (far_child && (heap.size() < static_cast<std::size_t>(k) ||
+                      far_child->box.min_dist_sq(target) < heap.top().dist))
       knn_search(far_child, target, k, depth + 1, heap);
   }
 
@@ -226,20 +232,15 @@ public:
     if (!node)
       return nullptr;
 
-    int d = !(depth & 1);
     if (node->point.id == target.id) {
       node->is_deleted = true;
       node->update_all_info();
       return node;
     }
-
-    if (target.coords[d] <= node->point.coords[d])
-      node->Left = lazy_remove(std::move(node->Left), target, depth + 1);
-    else
-      node->Right = lazy_remove(std::move(node->Right), target, depth + 1);
+    node->Left = lazy_remove(std::move(node->Left), target, depth + 1);
+    node->Right = lazy_remove(std::move(node->Right), target, depth + 1);
     node->update_all_info();
-
-    if (is_valid(node.get()))
+    if (needs_rebuild(node.get()))
       return rebuild(std::move(node), depth);
     return node;
   }

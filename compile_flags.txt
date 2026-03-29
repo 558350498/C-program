@@ -2,14 +2,17 @@
 -std=c++17
 --target=x86_64-w64-mingw32
 -isystem
-C:/msys64/ucrt64/include/c++/15.2.0
+C:/Program Files/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0/include/c++
 -isystem
-C:/msys64/ucrt64/include/c++/15.2.0/x86_64-w64-mingw32
+C:/Program Files/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0/include/c++/x86_64-w64-mingw32
 -isystem
-C:/msys64/ucrt64/include/c++/15.2.0/backward
+C:/Program Files/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0/include/c++/backward
 -isystem
-C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0/include
+C:/Program Files/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0/include
 -isystem
-C:/msys64/ucrt64/include
+C:/Program Files/mingw64/x86_64-w64-mingw32/include
 -isystem
-C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0/include-fixed
+C:/Program Files/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0/include-fixed
+-Wall
+-Wextra
+-Wpedantic

@@ -186,6 +186,19 @@ final_fare = base_fare × surge_ratio
 
 ---
 
+### 模块5：调试与优化阶段 [CURRENT PRIORITY]
+
+基于当前对 `hand_kd_tree.h` 的深度分析，首要任务是修复核心算法漏洞并补全缺失功能：
+
+1.  **修复 `BoundingBox` 逻辑**：修正 `min_dist_sq` 计算公式，确保 AABB 剪枝的正确性。
+2.  **树构建与重构补全**：在 `build`, `insert`, `rebuild` 等递归修改点补全 `update_all_info` 调用。
+3.  **KNN 稳健性增强**：处理 `heap` 为空时的访问逻辑，增加空指针防御检测。
+4.  **状态类封装**：将 `Kd_Tree` 改造为持有 `unique_ptr<KdNode> root_` 的有状态类，隐藏递归实现细节。
+5.  **地理距离算法**：由欧氏距离切换为 Haversine 距离，以满足纽约城市级别的经纬度计算精度。
+6.  **补全范围查询**：实现 `range_search` 接口，支撑供需比计算模型。
+
+---
+
 ## 验证计划
 
 ### 自动化测试（编译 + 运行）
