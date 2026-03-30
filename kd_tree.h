@@ -1,5 +1,5 @@
-#ifndef HAND_KD_TREE
-#define HAND_KD_TREE
+#ifndef KD_TREE
+#define KD_TREE
 
 #include <algorithm>
 #include <array>
@@ -246,4 +246,4 @@ public:
   }
 };
 
-#endif // HAND_KD_TREE
+#endif // KD_TREE
