@@ -9,7 +9,9 @@ enum class TaxiStatus { free, occupy, offline };
 
 class Taxi {
 public:
-  Taxi() : id(-1), x(0.0), y(0.0), status(TaxiStatus::free) {} // Default constructor required for unordered_map sometimes
+  Taxi()
+      : id(-1), x(0.0), y(0.0), status(TaxiStatus::free) {
+  } // Default constructor required for unordered_map sometimes
   Taxi(int id, double x, double y)
       : id(id), x(x), y(y), status(TaxiStatus::free) {}
 
