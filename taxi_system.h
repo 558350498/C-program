@@ -55,22 +55,43 @@ public:
     add_taxi(id);
   }
 
-  void knn_query(const Point &target, double radius) {
-    taxi_to_customer.clear();
-    int customer_id = target.id;
-    if (customer_id < 0)
-      return;
-    if (customer_id >= static_cast<int>(taxi_to_customer.size()))
-      taxi_to_customer.resize(customer_id + 1);
+  std::vector<Point> knn_query_free_taxi(const Point &customer_location, double radius) {
+    std::vector<Point> nearby_taxis = kd_tree.range_search(customer_location, radius);
+    std::vector<Point> free_taxis;
+    std::vector<int> stale_taxi_ids;
 
-    std::vector<Point> nearby_taxis = kd_tree.range_search(target, radius);
-    if(nearby_taxis.empty()) {
-      knn_query(target, radius * 2);
-    } else {
-      for (const Point &taxi_point : nearby_taxis) {
-        taxi_to_customer[customer_id].push_back(taxi_point.id);
+    for (const auto &taxi_point : nearby_taxis) {
+      auto it = taxi_map.find(taxi_point.id);
+      if (it == taxi_map.end() || it->second.status != TaxiStatus::free) {
+        stale_taxi_ids.push_back(taxi_point.id);
+        continue;
+      }
+      free_taxis.push_back(taxi_point);
+    }
+
+    for (int stale_id : stale_taxi_ids) {
+      if (!kd_tree.remove(stale_id)) {
+        rebuild_kd_tree_from_taxi_map();
+        break;
       }
     }
+
+    if (free_taxis.empty()) {
+      return {};
+    }
+
+    std::sort(free_taxis.begin(), free_taxis.end(),
+              [&customer_location](const Point &a, const Point &b) {
+                return Dist_Calculateor::dist_sq(a, customer_location) <
+                       Dist_Calculateor::dist_sq(b, customer_location);
+              });
+
+    Point assigned_taxi = free_taxis.front();
+    if (!update_taxi_status(assigned_taxi.id, TaxiStatus::occupy)) {
+      return {};
+    }
+
+    return {assigned_taxi};
   }
 
   bool update_taxi_status(int id, TaxiStatus new_status) {

@@ -120,9 +120,7 @@ using KnnPQ = std::priority_queue<KnnEntry, std::vector<KnnEntry>, std::less<Knn
 class Kd_Tree {
 private:
   static constexpr double ALPHA = 0.75;
-  std::unordered_map<int, Point> id_to_point;
-  std::unique_ptr<KdNode> root_;
-
+  
   static bool less_on_dim(const Point &a, const Point &b, int dim) {
     if (a.coords[dim] != b.coords[dim])
       return a.coords[dim] < b.coords[dim];
@@ -155,16 +153,16 @@ private:
     if (!node) return false;
     return node->size < (1.0 - ALPHA) * node->total;
   }
-
+  
   std::unique_ptr<KdNode> build_rec(std::vector<Point> &pts, int l, int r, int depth) {
     if (l > r)
-      return nullptr;
+    return nullptr;
     int d = !(depth & 1);
     int mid = (l + r) >> 1;
     std::nth_element(pts.begin() + l, pts.begin() + mid, pts.begin() + r + 1,
-                     [d](const Point &a, const Point &b) {
-                       return less_on_dim(a, b, d);
-                     });
+    [d](const Point &a, const Point &b) {
+      return less_on_dim(a, b, d);
+    });
     auto node = std::make_unique<KdNode>(pts[mid]);
     node->Left = build_rec(pts, l, mid - 1, depth + 1);
     node->Right = build_rec(pts, mid + 1, r, depth + 1);
@@ -181,11 +179,11 @@ private:
   void flatten(const KdNode *node, std::vector<Point> &pts) {
     if (!node) return;
     if (!node->is_deleted)  pts.push_back(node->point);
-                    
+    
     flatten(node->Left.get(), pts);
     flatten(node->Right.get(), pts);
   }
-
+  
   void insert_rec(std::unique_ptr<KdNode> &node, const Point &pt, int depth) {
     if (!node) {
       node = std::make_unique<KdNode>(pt);
@@ -193,81 +191,91 @@ private:
     }
     int d = !(depth & 1);
     if (less_on_dim(pt, node->point, d))
-      insert_rec(node->Left, pt, depth + 1);
+    insert_rec(node->Left, pt, depth + 1);
     else
-      insert_rec(node->Right, pt, depth + 1);
-
+    insert_rec(node->Right, pt, depth + 1);
+    
     node->update_all_info();
-
+    
     if (is_unbalanced(node.get()))
       node = rebuild(std::move(node), depth);
   }
-
+  
   void remove_rec(std::unique_ptr<KdNode> &node, const Point &pt, int depth) {
     if (!node)
-      return;
+    return;
     if (node->point.id == pt.id) {
       node->is_deleted = true;
     } else {
       int d = !(depth & 1);
       if (less_on_dim(pt, node->point, d))
-        remove_rec(node->Left, pt, depth + 1);
+      remove_rec(node->Left, pt, depth + 1);
       else
-        remove_rec(node->Right, pt, depth + 1);
+      remove_rec(node->Right, pt, depth + 1);
     }
     node->update_all_info();
-
+    
     if (needs_rebuild(node.get()))
       node = rebuild(std::move(node), depth);
-  }
-
-  void knn_search(const KdNode *node, const Point &target, int k, int depth, KnnPQ &heap) const {
-    if (!node) return;
-    if (heap.size() == static_cast<std::size_t>(k) && 
-    node->box.min_dist_sq(target) >= heap.top().dist) return;
-    
-    if (!node->is_deleted) {
-      double d = Dist_Calculateor::dist_sq(node->point, target);
-      if (heap.size() < static_cast<std::size_t>(k))
-        heap.push({d, node->point});
-      else if (d < heap.top().dist) {
-        heap.pop();
-        heap.push({d, node->point});
-      }
     }
 
-    int d = !(depth & 1);
+    void knn_search(const KdNode *node, const Point &target, int k, int depth, KnnPQ &heap) const {
+      if (!node) return;
+      if (heap.size() == static_cast<std::size_t>(k) && 
+      node->box.min_dist_sq(target) >= heap.top().dist) return;
+      
+      if (!node->is_deleted) {
+        double d = Dist_Calculateor::dist_sq(node->point, target);
+        if (heap.size() < static_cast<std::size_t>(k))
+        heap.push({d, node->point});
+        else if (d < heap.top().dist) {
+          heap.pop();
+          heap.push({d, node->point});
+        }
+      }
+      
+      int d = !(depth & 1);
     double diff = target.coords[d] - node->point.coords[d];
     KdNode *near_child = (diff <= 0) ? node->Left.get() : node->Right.get();
     KdNode *far_child = (diff <= 0) ? node->Right.get() : node->Left.get();
     if (near_child && (heap.size() < static_cast<std::size_t>(k) || 
     near_child->box.min_dist_sq(target) < heap.top().dist))
-        knn_search(near_child, target, k, depth + 1, heap);
+    knn_search(near_child, target, k, depth + 1, heap);
     if (far_child && (heap.size() < static_cast<std::size_t>(k) ||
     far_child->box.min_dist_sq(target) < heap.top().dist))
-        knn_search(far_child, target, k, depth + 1, heap);
+    knn_search(far_child, target, k, depth + 1, heap);
     return;
   }
-              
+  
   void range_search(const KdNode *node, const Point& center, const BoundingBox &range,
-  double radius_sq, std::vector<Point> &result) const {
-    if (!node) return;
-    if (node->box.min_dist_sq(center) > radius_sq) return;
-    if (!node->is_deleted && Dist_Calculateor::dist_sq(node->point, center) <= radius_sq)
+    double radius_sq, std::vector<Point> &result) const {
+      if (!node) return;
+      if (node->box.min_dist_sq(center) > radius_sq) return;
+      if (!node->is_deleted && Dist_Calculateor::dist_sq(node->point, center) <= radius_sq)
       result.push_back(node->point);
-    range_search(node->Left.get(), center, range, radius_sq, result);
-    range_search(node->Right.get(), center, range, radius_sq, result);
-  }
-
+      range_search(node->Left.get(), center, range, radius_sq, result);
+      range_search(node->Right.get(), center, range, radius_sq, result);
+    }
+    
 public:
+  std::unordered_map<int, Point> id_to_point;
+  std::unique_ptr<KdNode> root_;
   std::unique_ptr<KdNode> build(std::vector<Point> &pts, int l, int r, int depth) {
     return build_rec(pts, l, r, depth);
+  }
+
+  int active_size() const {
+    return static_cast<int>(id_to_point.size());
+  }
+
+  int total_size() const {
+    return root_->total;
   }
 
   bool contains(int id) const {
     return id_to_point.count(id) > 0;
   }
-  
+
   bool insert(const Point &pt) {
     if (id_to_point.count(pt.id)) return false;
     id_to_point[pt.id] = pt;
