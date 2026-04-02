@@ -123,6 +123,17 @@ private:
   std::unordered_map<int, Point> id_to_point;
   std::unique_ptr<KdNode> root_;
 
+  static bool less_on_dim(const Point &a, const Point &b, int dim) {
+    if (a.coords[dim] != b.coords[dim])
+      return a.coords[dim] < b.coords[dim];
+
+    int d = dim ^ 1;
+    if (a.coords[d] != b.coords[d])
+      return a.coords[d] < b.coords[d];
+
+    return a.id < b.id;
+  }
+
   static int get_total(const std::unique_ptr<KdNode> &p) {
     return p ? p->total : 0;
   }
@@ -152,7 +163,7 @@ private:
     int mid = (l + r) >> 1;
     std::nth_element(pts.begin() + l, pts.begin() + mid, pts.begin() + r + 1,
                      [d](const Point &a, const Point &b) {
-                       return a.coords[d] < b.coords[d];
+                       return less_on_dim(a, b, d);
                      });
     auto node = std::make_unique<KdNode>(pts[mid]);
     node->Left = build_rec(pts, l, mid - 1, depth + 1);
@@ -181,7 +192,7 @@ private:
       return;
     }
     int d = !(depth & 1);
-    if (pt.coords[d] < node->point.coords[d])
+    if (less_on_dim(pt, node->point, d))
       insert_rec(node->Left, pt, depth + 1);
     else
       insert_rec(node->Right, pt, depth + 1);
@@ -192,19 +203,22 @@ private:
       node = rebuild(std::move(node), depth);
   }
 
-  void remove_rec(KdNode *node, const Point &pt, int depth) {
+  void remove_rec(std::unique_ptr<KdNode> &node, const Point &pt, int depth) {
     if (!node)
       return;
     if (node->point.id == pt.id) {
       node->is_deleted = true;
     } else {
       int d = !(depth & 1);
-      if (pt.coords[d] < node->point.coords[d])
-        remove_rec(node->Left.get(), pt, depth + 1);
+      if (less_on_dim(pt, node->point, d))
+        remove_rec(node->Left, pt, depth + 1);
       else
-        remove_rec(node->Right.get(), pt, depth + 1);
+        remove_rec(node->Right, pt, depth + 1);
     }
     node->update_all_info();
+
+    if (needs_rebuild(node.get()))
+      node = rebuild(std::move(node), depth);
   }
 
   void knn_search(const KdNode *node, const Point &target, int k, int depth, KnnPQ &heap) const {
@@ -247,9 +261,13 @@ private:
 
 public:
   std::unique_ptr<KdNode> build(std::vector<Point> &pts, int l, int r, int depth) {
-    
+    return build_rec(pts, l, r, depth);
   }
 
+  bool contains(int id) const {
+    return id_to_point.count(id) > 0;
+  }
+  
   bool insert(const Point &pt) {
     if (id_to_point.count(pt.id)) return false;
     id_to_point[pt.id] = pt;
@@ -261,12 +279,15 @@ public:
     auto it = id_to_point.find(id);
     if (it == id_to_point.end())
       return false;
-    remove_rec(root_.get(), it->second, 0);
+    remove_rec(root_, it->second, 0);
     id_to_point.erase(it);
     return true;
   }
   
   std::vector<Point> knn(const Point& target, int k) const {
+    if (k <= 0 || !root_)
+      return {};
+
     KnnPQ heap;
     knn_search(root_.get(), target, k, 0, heap);
     std::vector<Point> result;
@@ -279,6 +300,9 @@ public:
   }
 
   std::vector<Point> range_search(const Point& center, double radius) const {
+    if (radius < 0 || !root_)
+      return {};
+
     BoundingBox range;
     for (int i = 0; i < 2; i++) {
       range.min_coords[i] = center.coords[i] - radius;
@@ -289,6 +313,14 @@ public:
     return result;
   }
 
+  void clear() {
+    root_.reset();
+    id_to_point.clear();
+  }
+
+  void update_root_node(std::unique_ptr<KdNode> new_root) {
+    root_ = std::move(new_root);
+  }
 };
 
 #endif // KD_TREE
