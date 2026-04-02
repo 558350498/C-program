@@ -37,6 +37,7 @@ private:
   void online(int id, double x, double y) {
     auto it = taxi_map.find(id);
     if (it == taxi_map.end()) return;
+    if (it->second.status != TaxiStatus::offline) return;
     
     Taxi &taxi = it->second;
     taxi.x = x;
@@ -44,7 +45,7 @@ private:
     if (taxi.status != TaxiStatus::free) {
       Point coords(taxi.x, taxi.y, id);
       kd_tree.insert(coords);
-    }
+    } 
     taxi.status = TaxiStatus::free;
   }
 public:
@@ -55,6 +56,7 @@ public:
   }
 
   void knn_query(const Point &target, double radius) {
+    taxi_to_customer.clear();
     int customer_id = target.id;
     if (customer_id < 0)
       return;
@@ -63,8 +65,7 @@ public:
 
     std::vector<Point> nearby_taxis = kd_tree.range_search(target, radius);
     if(nearby_taxis.empty()) {
-      // Handle the case where no nearby taxis are found
-      // This could involve logging a message or taking other appropriate action
+      knn_query(target, radius * 2);
     } else {
       for (const Point &taxi_point : nearby_taxis) {
         taxi_to_customer[customer_id].push_back(taxi_point.id);
@@ -74,40 +75,51 @@ public:
 
   bool update_taxi_status(int id, TaxiStatus new_status) {
     auto it = taxi_map.find(id);
-    if (it == taxi_map.end()) return;
+    if (it == taxi_map.end()) return false;
     
     Taxi &taxi = it->second;
-    if (taxi.status == new_status) return;
+    if (taxi.status == new_status) return true;
     
     if (taxi.status == TaxiStatus::free && new_status != TaxiStatus::free) {
-      Point coords(taxi.x, taxi.y, id);
-      bool removed = kd_tree.remove(id);
-      if(!removed) {
-        kd_tree.contains(id) ? rebuild_kd_tree_from_taxi_map() : taxi.status = new_status;
+      bool is_removed = kd_tree.remove(id);
+      if (!is_removed) {
+        rebuild_kd_tree_from_taxi_map();
+        is_removed = kd_tree.remove(id);
+        if (!is_removed) {
+          return false;
+        }
         taxi.status = new_status;
+        return true;
       }
+      taxi.status = new_status;
+      return true;
     } else if (taxi.status != TaxiStatus::free && new_status == TaxiStatus::free) {
-      Point coords(taxi.x, taxi.y, id);
-      bool inserted = kd_tree.insert(coords);
-      if(!inserted) {
-        kd_tree.contains(id) ? taxi.status = new_status : rebuild_kd_tree_from_taxi_map();
-      } else {
+      bool is_inserted = kd_tree.insert(Point(taxi.x, taxi.y, id));
+      if (!is_inserted) {
+        rebuild_kd_tree_from_taxi_map();
+        is_inserted = kd_tree.insert(Point(taxi.x, taxi.y, id));
+        if (!is_inserted) {
+          return false;
+        }
         taxi.status = new_status;
+        return true;
       }
+      taxi.status = new_status;
+      return true;
     }
-    
+
+    taxi.status = new_status;
+    return true;
   }
 
   void rebuild_kd_tree_from_taxi_map() {
-    std::vector<Point> points;
-    kd_tree.clear(); // Clear the existing kd-tree before rebuilding
-    for (const auto &taxi : taxi_map) {
-      if (taxi.second.status == TaxiStatus::free) {
-        points.emplace_back(taxi.second.x, taxi.second.y, taxi.first);
+    kd_tree.clear();
+    for(const auto& [id, taxi] : taxi_map) {
+      if (taxi.status == TaxiStatus::free) {
+        kd_tree.insert(Point(taxi.x, taxi.y, id));
       }
     }
-    std::unique_ptr<KdNode> new_root = kd_tree.build(points, 0, static_cast<int>(points.size()) - 1, 0);
-    kd_tree.update_root_node(std::move(new_root));
+    return;
   }
 };
 
