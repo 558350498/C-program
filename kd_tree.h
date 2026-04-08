@@ -269,7 +269,7 @@ public:
   }
 
   int total_size() const {
-    return root_->total;
+    return root_ ? root_->total : 0;
   }
 
   bool contains(int id) const {
