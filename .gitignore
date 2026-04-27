@@ -13,3 +13,10 @@ debug_analysis.md
 implementation_plan.md
 数据结构课程设计选题说明表_内容.txt
 compile_flags.txt
+build/
+CMakeFiles/
+CMakeCache.txt
+Testing/
+cmake_install.cmake
+build_*.exe
+compat_*.exe
