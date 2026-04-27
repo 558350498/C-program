@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dispatch_strategy.h"
+#include "requestcontext.h"
 #include "spatial_index.h"
 #include "taxi_domain.h"
 
@@ -22,8 +23,12 @@ public:
   bool set_taxi_offline(int id);
   bool update_taxi_position(int id, double x, double y);
   bool update_taxi_status(int id, TaxiStatus status);
+  std::optional<int> dispatch_nearest(IRequestContext &request, double radius);
   std::optional<int> dispatch_nearest(int customer_id, double x, double y,
                                       double radius);
+  bool start_trip(IRequestContext &request);
+  bool complete_trip(IRequestContext &request);
+  bool cancel_request(IRequestContext &request);
 
 private:
   std::unordered_map<int, Taxi> taxi_map_;
@@ -36,6 +41,7 @@ private:
   bool rebuild_spatial_index(const char *operation);
   bool remove_from_spatial_index(const Taxi &taxi, const char *operation);
   bool upsert_into_spatial_index(const Taxi &taxi, const char *operation);
+  bool release_occupied_taxi(int id, const char *operation);
 };
 
 using taxi_system = TaxiSystem;

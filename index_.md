@@ -1,25 +1,26 @@
 # 工程导航索引
 
-这份索引的目标不是记录所有实现细节，而是帮助自己在忘记函数名或调用关系时，能在几十秒内重新定位代码。
+这份索引不是实现细节文档，它的目标是：忘记函数名或调用关系时，能快速定位应该看哪个模块。
 
-## 当前项目主分层
+## 当前主分层
 
 ### TaxiSystem
 
 负责什么：
 
-1. 作为业务编排入口
-2. 管 taxi 注册、上下线、状态切换、位置更新
-3. 在业务动作中调用空间索引和派单策略
-4. 保证 taxi 状态和空间索引状态尽量同步
+1. 作为业务编排入口。
+2. 管 taxi 注册、上下线、位置更新、状态迁移。
+3. 调用空间索引和派单策略。
+4. 编排 request 生命周期入口，例如派单、开始行程、完成行程、取消请求。
 
 不负责什么：
 
-1. 不直接实现空间搜索算法
-2. 不直接实现具体派单策略
-3. 不应该长期承担完整订单生命周期细节
+1. 不直接实现空间搜索算法。
+2. 不直接实现具体派单策略。
+3. 不保存复杂历史订单数据。
+4. 不负责 CSV、tile、MCMF 等离线仿真输入。
 
-最常用入口：
+核心入口：
 
 - `create_taxi`
 - `register_taxi`
@@ -27,12 +28,71 @@
 - `set_taxi_offline`
 - `update_taxi_position`
 - `update_taxi_status`
-- `dispatch_nearest`
+- `dispatch_nearest(IRequestContext&, double)`
+- `start_trip(IRequestContext&)`
+- `complete_trip(IRequestContext&)`
+- `cancel_request(IRequestContext&)`
 
 代码位置：
 
 - `include/taxi_system.h`
 - `src/taxi_system.cpp`
+
+当前关键约束：
+
+- `occupy` taxi 不能直接 offline。
+- `occupy` taxi 不能通过 `update_taxi_status(..., free)` 绕过 request 生命周期释放。
+- 释放占用车辆应该走 `complete_trip` 或 `cancel_request`。
+
+---
+
+### IRequestContext / RequestContext
+
+负责什么：
+
+1. 管单个 request 的生命周期。
+2. 记录 request 和 taxi 的绑定关系。
+3. 提供 request 状态查询。
+4. 给以后替换 request 存储或上下文实现留虚接口。
+
+不负责什么：
+
+1. 不做派单算法。
+2. 不做空间索引维护。
+3. 不直接修改 taxi 状态。
+4. 不替代 `TaxiSystem` 做业务总编排。
+
+核心状态：
+
+- `pending`
+- `dispatched`
+- `serving`
+- `completed`
+- `canceled`
+
+核心入口：
+
+- `assign_taxi`
+- `start_trip`
+- `complete_request`
+- `cancel_request`
+- `taxi_id`
+- `status`
+- `start_location`
+- `end_location`
+
+代码位置：
+
+- `include/requestcontext.h`
+- `src/requestcontext.cpp`
+
+当前状态流：
+
+1. 新建 request 后是 `pending`。
+2. `dispatch_nearest` 成功后调用 `assign_taxi`，状态变为 `dispatched`。
+3. `start_trip` 成功后状态变为 `serving`。
+4. `complete_trip` 成功后状态变为 `completed`，绑定 taxi 被释放。
+5. `cancel_request` 成功后状态变为 `canceled`，绑定 taxi 被释放。
 
 ---
 
@@ -40,17 +100,17 @@
 
 负责什么：
 
-1. 管理空闲 taxi 的空间索引
-2. 提供按半径搜索候选 taxi 的能力
-3. 提供索引重建能力
+1. 管空闲 taxi 的空间索引。
+2. 提供半径搜索。
+3. 提供索引重建能力。
 
 不负责什么：
 
-1. 不管理订单或请求生命周期
-2. 不决定最终派给哪辆车
-3. 不应该承载业务层状态机
+1. 不管 request 生命周期。
+2. 不决定最终派给哪辆车。
+3. 不承载业务状态机。
 
-最常用入口：
+核心入口：
 
 - `upsert`
 - `erase`
@@ -71,22 +131,16 @@
 
 负责什么：
 
-1. 在给定候选状态下决定选哪辆 taxi
-2. 实现可替换的派单策略
-3. 作为后续最近车、batch matching、MCMF 的扩展点
+1. 在给定 taxi 状态和空间索引时选择候选 taxi。
+2. 作为最近车、batch matching、MCMF 等策略的扩展点。
 
 不负责什么：
 
-1. 不应该直接管理 taxi 生命周期
-2. 不应该直接记录 request 和 taxi 的绑定事实
-3. 不应该成为业务状态机本体
+1. 不直接管理 taxi 生命周期。
+2. 不记录 request 和 taxi 的绑定事实。
+3. 不应该成为业务状态机本体。
 
-当前注意点：
-
-1. 当前默认策略里混入了少量 stale index 清理逻辑
-2. 后续如果上 batch matching / dry-run / MCMF，最好逐步收敛为“纯决策接口”
-
-最常用入口：
+核心入口：
 
 - `select_taxi`
 
@@ -96,16 +150,21 @@
 - `include/nearest_free_taxi_strategy.h`
 - `src/dispatch_strategy.cpp`
 
+当前注意点：
+
+- 默认策略里仍有少量 stale index 清理逻辑。
+- 后续做 batch matching / dry-run / MCMF 时，最好逐步收敛成更纯的决策接口。
+
 ---
 
 ### Taxi / Point / TaxiStatus
 
 负责什么：
 
-1. 定义当前系统最基础的领域对象
-2. 作为业务层、索引层、策略层共享的数据表示
+1. 定义系统最基础的领域对象。
+2. 在业务层、索引层、策略层之间共享数据表示。
 
-当前核心状态：
+核心状态：
 
 - `TaxiStatus::free`
 - `TaxiStatus::occupy`
@@ -116,59 +175,17 @@
 - `include/taxi_domain.h`
 - `src/taxi_domain.cpp`
 
-## 下一步准备新增的层
+## 忘记函数时怎么找
 
-### RequestContext
+1. 先判断问题属于哪一类：业务编排、request 生命周期、空间搜索、派单决策、基础领域对象。
+2. 进入对应模块看核心入口。
+3. 状态变化优先看 `TaxiSystem` 和 `RequestContext`。
+4. 算法策略优先看 `IDispatchStrategy`。
+5. 空间查询优先看 `ISpatialIndex`。
 
-目标：
+## 当前设计原则
 
-补上“请求生命周期和 request-taxi 绑定事实”这一层，解决当前系统只有 taxi busy/free 状态、但没有显式请求绑定的问题。
-
-负责什么：
-
-1. 管 request 生命周期
-2. 管 request 和 taxi 的绑定关系
-3. 提供 request 状态查询
-
-不负责什么：
-
-1. 不做派单算法
-2. 不做空间索引维护
-3. 不直接更新 taxi 位置
-4. 不替代 TaxiSystem 做总编排
-
-建议最小状态集合：
-
-- `pending`
-- `dispatched`
-- `serving`
-- `completed`
-- `canceled`
-
-建议最小入口：
-
-- `create_request`
-- `assign_taxi`
-- `start_trip`
-- `complete_request`
-- `cancel_request`
-
-关键约束：
-
-1. 一个 request 同时只能绑定一辆 taxi
-2. 一个 serving 中的 request 不能无语义消失
-3. 一个 occupy 的 taxi 不应直接下线而不处理绑定 request
-
-## 以后忘了函数时怎么找
-
-1. 先判断这是“业务编排、空间搜索、派单决策、请求绑定”中的哪一类问题
-2. 再进入对应模块找入口函数
-3. 不要先全局搜模糊动词，比如 `update`、`handle`、`process`
-4. 先找业务句子式函数名，比如 `set_taxi_online`、`dispatch_nearest`、`assign_taxi`
-
-## 当前项目最重要的设计原则
-
-1. 不过度设计
-2. 频繁变更的地方留接口
-3. 相对稳定的地方保持薄接口、可读、易找回
-4. 先把业务生命周期闭环补齐，再考虑更复杂的算法层
+1. 不过度设计。
+2. 频繁变化的地方保留虚接口。
+3. 稳定领域对象保持薄接口。
+4. 先补业务生命周期闭环，再扩 CSV、tile 和 MCMF。

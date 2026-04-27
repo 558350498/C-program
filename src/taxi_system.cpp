@@ -2,8 +2,6 @@
 
 #include "kd_tree_spatial_index.h"
 #include "nearest_free_taxi_strategy.h"
-#include "requestcontext.h"
-
 #include <iostream>
 #include <sstream>
 #include <utility>
@@ -132,13 +130,6 @@ bool TaxiSystem::set_taxi_offline(int id) {
     return false;
   }
 
-  if (taxi->status == TaxiStatus::occupy) {
-    log_error("TaxiSystem::set_taxi_offline",
-              "taxi_id=" + std::to_string(id) +
-                  " is occupied and cannot go offline");
-    return false;
-  }
-
   if (taxi->status == TaxiStatus::free &&
       !remove_from_spatial_index(*taxi, "TaxiSystem::set_taxi_offline")) {
     return false;
@@ -203,6 +194,13 @@ bool TaxiSystem::update_taxi_status(int id, TaxiStatus status) {
     return set_taxi_offline(id);
   }
 
+  if (taxi->status == TaxiStatus::occupy && status == TaxiStatus::free) {
+    log_error("TaxiSystem::update_taxi_status",
+              "taxi_id=" + std::to_string(id) +
+                  " is occupied; use complete_trip or cancel_request");
+    return false;
+  }
+
   if (taxi->status == TaxiStatus::free &&
       !remove_from_spatial_index(*taxi, "TaxiSystem::update_taxi_status")) {
     return false;
@@ -223,10 +221,18 @@ bool TaxiSystem::update_taxi_status(int id, TaxiStatus status) {
   return true;
 }
 
-std::optional<int> TaxiSystem::dispatch_nearest(const RequestContext &request, double radius) {
+std::optional<int> TaxiSystem::dispatch_nearest(IRequestContext &request,
+                                                double radius) {
+  if (request.status() != RequestStatus::pending) {
+    log_error("TaxiSystem::dispatch_nearest",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " is not pending, status=" + to_string(request.status()));
+    return std::nullopt;
+  }
+
   const int customer_id = request.customer_id();
-  const double x = request.start_location().x;
-  const double y = request.start_location().y;
+  const double x = request.start_location().coords[0];
+  const double y = request.start_location().coords[1];
 
   if (radius < 0.0) {
     log_error("TaxiSystem::dispatch_nearest",
@@ -246,6 +252,15 @@ std::optional<int> TaxiSystem::dispatch_nearest(const RequestContext &request, d
     return std::nullopt;
   }
 
+  const Taxi *selected_taxi = find_taxi(*taxi_id);
+  if (!selected_taxi || selected_taxi->status != TaxiStatus::free) {
+    log_error("TaxiSystem::dispatch_nearest",
+              "taxi_id=" + std::to_string(*taxi_id) +
+                  " is not available for request_id=" +
+                  std::to_string(request.request_id()));
+    return std::nullopt;
+  }
+
   if (!update_taxi_status(*taxi_id, TaxiStatus::occupy)) {
     log_error("TaxiSystem::dispatch_nearest",
               "customer_id=" + std::to_string(customer_id) +
@@ -253,19 +268,116 @@ std::optional<int> TaxiSystem::dispatch_nearest(const RequestContext &request, d
     return std::nullopt;
   }
 
-  if (request.customer_id() != customer_id || request.end_location().id != customer_id) {
+  if (!request.assign_taxi(*taxi_id)) {
     log_error("TaxiSystem::dispatch_nearest",
-              "customer_id=" + std::to_string(customer_id) +
-                  " has inconsistent request context");
-    update_taxi_status(*taxi_id, TaxiStatus::free);
+              "request_id=" + std::to_string(request.request_id()) +
+                  " failed to bind taxi_id=" + std::to_string(*taxi_id));
+    release_occupied_taxi(*taxi_id, "TaxiSystem::dispatch_nearest");
     return std::nullopt;
   }
   
   std::ostringstream stream;
-  stream << "customer_id=" << customer_id << " assigned taxi_id=" << *taxi_id
+  stream << "request_id=" << request.request_id() << " customer_id="
+         << customer_id << " assigned taxi_id=" << *taxi_id
          << " at (" << x << ", " << y << ")";
   log_info("TaxiSystem::dispatch_nearest", stream.str());
   return taxi_id;
+}
+
+std::optional<int> TaxiSystem::dispatch_nearest(int customer_id, double x,
+                                                double y, double radius) {
+  RequestContext request(customer_id, customer_id, Point(x, y, customer_id),
+                         Point(x, y, customer_id));
+  return dispatch_nearest(request, radius);
+}
+
+bool TaxiSystem::start_trip(IRequestContext &request) {
+  const std::optional<int> taxi_id = request.taxi_id();
+  if (!taxi_id) {
+    log_error("TaxiSystem::start_trip",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " has no assigned taxi");
+    return false;
+  }
+
+  const Taxi *taxi = find_taxi(*taxi_id);
+  if (!taxi || taxi->status != TaxiStatus::occupy) {
+    log_error("TaxiSystem::start_trip",
+              "taxi_id=" + std::to_string(*taxi_id) +
+                  " is not occupied for request_id=" +
+                  std::to_string(request.request_id()));
+    return false;
+  }
+
+  if (!request.start_trip()) {
+    log_error("TaxiSystem::start_trip",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " cannot start from status=" + to_string(request.status()));
+    return false;
+  }
+
+  log_info("TaxiSystem::start_trip",
+           "request_id=" + std::to_string(request.request_id()) +
+               " status=" + to_string(request.status()));
+  return true;
+}
+
+bool TaxiSystem::complete_trip(IRequestContext &request) {
+  const std::optional<int> taxi_id = request.taxi_id();
+  if (!taxi_id) {
+    log_error("TaxiSystem::complete_trip",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " has no assigned taxi");
+    return false;
+  }
+
+  const Taxi *taxi = find_taxi(*taxi_id);
+  if (!taxi || taxi->status != TaxiStatus::occupy) {
+    log_error("TaxiSystem::complete_trip",
+              "taxi_id=" + std::to_string(*taxi_id) +
+                  " is not occupied for request_id=" +
+                  std::to_string(request.request_id()));
+    return false;
+  }
+
+  if (!request.complete_request()) {
+    log_error("TaxiSystem::complete_trip",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " cannot complete from status=" + to_string(request.status()));
+    return false;
+  }
+
+  if (!release_occupied_taxi(*taxi_id, "TaxiSystem::complete_trip")) {
+    return false;
+  }
+
+  log_info("TaxiSystem::complete_trip",
+           "request_id=" + std::to_string(request.request_id()) +
+               " completed with taxi_id=" + std::to_string(*taxi_id));
+  return true;
+}
+
+bool TaxiSystem::cancel_request(IRequestContext &request) {
+  const std::optional<int> taxi_id = request.taxi_id();
+  if (!request.cancel_request()) {
+    log_error("TaxiSystem::cancel_request",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " cannot cancel from status=" + to_string(request.status()));
+    return false;
+  }
+
+  if (taxi_id) {
+    const Taxi *taxi = find_taxi(*taxi_id);
+    if (taxi && taxi->status == TaxiStatus::occupy &&
+        !release_occupied_taxi(*taxi_id, "TaxiSystem::cancel_request")) {
+      return false;
+    }
+  }
+
+  log_info("TaxiSystem::cancel_request",
+           "request_id=" + std::to_string(request.request_id()) +
+               " status=" + to_string(request.status()));
+  return true;
 }
 
 Taxi *TaxiSystem::find_taxi(int id) {
@@ -336,4 +448,28 @@ bool TaxiSystem::upsert_into_spatial_index(const Taxi &taxi,
             "failed to sync taxi_id=" + std::to_string(taxi.id) +
                 " into spatial index, triggering rebuild");
   return rebuild_spatial_index(operation);
+}
+
+bool TaxiSystem::release_occupied_taxi(int id, const char *operation) {
+  Taxi *taxi = find_taxi(id);
+  if (!taxi) {
+    log_error(operation, "taxi_id=" + std::to_string(id) + " not found");
+    return false;
+  }
+
+  if (taxi->status != TaxiStatus::occupy) {
+    log_error(operation,
+              "taxi_id=" + std::to_string(id) +
+                  " is not occupied, status=" + to_string(taxi->status));
+    return false;
+  }
+
+  taxi->status = TaxiStatus::free;
+  if (!upsert_into_spatial_index(*taxi, operation)) {
+    taxi->status = TaxiStatus::occupy;
+    return false;
+  }
+
+  log_info(operation, taxi_status_message(id, taxi->status));
+  return true;
 }
