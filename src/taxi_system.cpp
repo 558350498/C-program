@@ -1,0 +1,339 @@
+#include "taxi_system.h"
+
+#include "kd_tree_spatial_index.h"
+#include "nearest_free_taxi_strategy.h"
+#include "requestcontext.h"
+
+#include <iostream>
+#include <sstream>
+#include <utility>
+
+namespace {
+
+void log_error(const char *operation, const std::string &message) {
+  std::cerr << '[' << operation << "] " << message << '\n';
+}
+
+void log_info(const char *operation, const std::string &message) {
+  std::clog << '[' << operation << "] " << message << '\n';
+}
+
+std::string taxi_status_message(int id, TaxiStatus status) {
+  std::ostringstream stream;
+  stream << "taxi_id=" << id << " status=" << to_string(status);
+  return stream.str();
+}
+
+} // namespace
+
+TaxiSystem::TaxiSystem(std::unique_ptr<ISpatialIndex> spatial_index,
+                       std::unique_ptr<IDispatchStrategy> dispatch_strategy)
+    : spatial_index_(std::move(spatial_index)),
+      dispatch_strategy_(std::move(dispatch_strategy)), next_taxi_id_(0) {
+  if (!spatial_index_) {
+    spatial_index_ = std::make_unique<KdTreeSpatialIndex>();
+  }
+  if (!dispatch_strategy_) {
+    dispatch_strategy_ = std::make_unique<NearestFreeTaxiStrategy>();
+  }
+}
+
+TaxiSystem::~TaxiSystem() = default;
+
+int TaxiSystem::create_taxi() {
+  const int id = next_taxi_id_;
+  ++next_taxi_id_;
+
+  if (!register_taxi(id)) {
+    log_error("TaxiSystem::create_taxi",
+              "failed to register generated taxi_id=" + std::to_string(id));
+    return -1;
+  }
+
+  log_info("TaxiSystem::create_taxi",
+           "created taxi_id=" + std::to_string(id) + " status=offline");
+  return id;
+}
+
+bool TaxiSystem::register_taxi(int id) {
+  if (id < 0) {
+    log_error("TaxiSystem::register_taxi",
+              "rejected invalid taxi_id=" + std::to_string(id));
+    return false;
+  }
+
+  if (taxi_map_.count(id)) {
+    log_error("TaxiSystem::register_taxi",
+              "duplicate taxi_id=" + std::to_string(id));
+    return false;
+  }
+
+  taxi_map_.emplace(id, Taxi(id, 0.0, 0.0, TaxiStatus::offline));
+  if (id >= next_taxi_id_) {
+    next_taxi_id_ = id + 1;
+  }
+
+  log_info("TaxiSystem::register_taxi",
+           "registered taxi_id=" + std::to_string(id) + " status=offline");
+  return true;
+}
+
+bool TaxiSystem::set_taxi_online(int id, double x, double y) {
+  Taxi *taxi = find_taxi(id);
+  if (!taxi) {
+    log_error("TaxiSystem::set_taxi_online",
+              "taxi_id=" + std::to_string(id) + " not found");
+    return false;
+  }
+
+  if (taxi->status != TaxiStatus::offline) {
+    log_error("TaxiSystem::set_taxi_online",
+              "taxi_id=" + std::to_string(id) +
+                  " must be offline before going online");
+    return false;
+  }
+
+  const double old_x = taxi->x;
+  const double old_y = taxi->y;
+  taxi->x = x;
+  taxi->y = y;
+  taxi->status = TaxiStatus::free;
+
+  if (!upsert_into_spatial_index(*taxi, "TaxiSystem::set_taxi_online")) {
+    taxi->x = old_x;
+    taxi->y = old_y;
+    taxi->status = TaxiStatus::offline;
+    rebuild_spatial_index("TaxiSystem::set_taxi_online");
+    return false;
+  }
+
+  std::ostringstream stream;
+  stream << "taxi_id=" << id << " is online at (" << x << ", " << y << ")";
+  log_info("TaxiSystem::set_taxi_online", stream.str());
+  return true;
+}
+
+bool TaxiSystem::set_taxi_offline(int id) {
+  Taxi *taxi = find_taxi(id);
+  if (!taxi) {
+    log_error("TaxiSystem::set_taxi_offline",
+              "taxi_id=" + std::to_string(id) + " not found");
+    return false;
+  }
+
+  if (taxi->status == TaxiStatus::offline) {
+    return true;
+  }
+
+  if (taxi->status == TaxiStatus::occupy) {
+    log_error("TaxiSystem::set_taxi_offline",
+              "taxi_id=" + std::to_string(id) +
+                  " is occupied and cannot go offline");
+    return false;
+  }
+
+  if (taxi->status == TaxiStatus::occupy) {
+    log_error("TaxiSystem::set_taxi_offline",
+              "taxi_id=" + std::to_string(id) +
+                  " is occupied and cannot go offline");
+    return false;
+  }
+
+  if (taxi->status == TaxiStatus::free &&
+      !remove_from_spatial_index(*taxi, "TaxiSystem::set_taxi_offline")) {
+    return false;
+  }
+
+  taxi->status = TaxiStatus::offline;
+  log_info("TaxiSystem::set_taxi_offline", taxi_status_message(id, taxi->status));
+  return true;
+}
+
+bool TaxiSystem::update_taxi_position(int id, double x, double y) {
+  Taxi *taxi = find_taxi(id);
+  if (!taxi) {
+    log_error("TaxiSystem::update_taxi_position",
+              "taxi_id=" + std::to_string(id) + " not found");
+    return false;
+  }
+
+  if (taxi->status == TaxiStatus::offline) {
+    log_error("TaxiSystem::update_taxi_position",
+              "taxi_id=" + std::to_string(id) +
+                  " is offline and cannot move");
+    return false;
+  }
+
+  const double old_x = taxi->x;
+  const double old_y = taxi->y;
+  taxi->x = x;
+  taxi->y = y;
+
+  if (taxi->status == TaxiStatus::free &&
+      !upsert_into_spatial_index(*taxi, "TaxiSystem::update_taxi_position")) {
+    taxi->x = old_x;
+    taxi->y = old_y;
+    rebuild_spatial_index("TaxiSystem::update_taxi_position");
+    return false;
+  }
+
+  return true;
+}
+
+bool TaxiSystem::update_taxi_status(int id, TaxiStatus status) {
+  Taxi *taxi = find_taxi(id);
+  if (!taxi) {
+    log_error("TaxiSystem::update_taxi_status",
+              "taxi_id=" + std::to_string(id) + " not found");
+    return false;
+  }
+
+  if (taxi->status == status) {
+    return true;
+  }
+
+  if (taxi->status == TaxiStatus::offline && status == TaxiStatus::free) {
+    log_error("TaxiSystem::update_taxi_status",
+              "taxi_id=" + std::to_string(id) +
+                  " must use set_taxi_online to become free");
+    return false;
+  }
+
+  if (status == TaxiStatus::offline) {
+    return set_taxi_offline(id);
+  }
+
+  if (taxi->status == TaxiStatus::free &&
+      !remove_from_spatial_index(*taxi, "TaxiSystem::update_taxi_status")) {
+    return false;
+  }
+
+  const TaxiStatus previous_status = taxi->status;
+  taxi->status = status;
+
+  if (status == TaxiStatus::free &&
+      !upsert_into_spatial_index(*taxi, "TaxiSystem::update_taxi_status")) {
+    taxi->status = previous_status;
+    rebuild_spatial_index("TaxiSystem::update_taxi_status");
+    return false;
+  }
+
+  log_info("TaxiSystem::update_taxi_status",
+           taxi_status_message(id, taxi->status));
+  return true;
+}
+
+std::optional<int> TaxiSystem::dispatch_nearest(const RequestContext &request, double radius) {
+  const int customer_id = request.customer_id();
+  const double x = request.start_location().x;
+  const double y = request.start_location().y;
+
+  if (radius < 0.0) {
+    log_error("TaxiSystem::dispatch_nearest",
+              "customer_id=" + std::to_string(customer_id) +
+                  " provided negative radius=" + std::to_string(radius));
+    return std::nullopt;
+  }
+
+  const Point customer_location(x, y, customer_id);
+  const std::optional<int> taxi_id = dispatch_strategy_->select_taxi(
+      customer_location, radius, taxi_map_, *spatial_index_);
+
+  if (!taxi_id) {
+    log_error("TaxiSystem::dispatch_nearest",
+              "customer_id=" + std::to_string(customer_id) +
+                  " has no available taxi");
+    return std::nullopt;
+  }
+
+  if (!update_taxi_status(*taxi_id, TaxiStatus::occupy)) {
+    log_error("TaxiSystem::dispatch_nearest",
+              "customer_id=" + std::to_string(customer_id) +
+                  " failed to occupy taxi_id=" + std::to_string(*taxi_id));
+    return std::nullopt;
+  }
+
+  if (request.customer_id() != customer_id || request.end_location().id != customer_id) {
+    log_error("TaxiSystem::dispatch_nearest",
+              "customer_id=" + std::to_string(customer_id) +
+                  " has inconsistent request context");
+    update_taxi_status(*taxi_id, TaxiStatus::free);
+    return std::nullopt;
+  }
+  
+  std::ostringstream stream;
+  stream << "customer_id=" << customer_id << " assigned taxi_id=" << *taxi_id
+         << " at (" << x << ", " << y << ")";
+  log_info("TaxiSystem::dispatch_nearest", stream.str());
+  return taxi_id;
+}
+
+Taxi *TaxiSystem::find_taxi(int id) {
+  const auto it = taxi_map_.find(id);
+  if (it == taxi_map_.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+std::vector<Point> TaxiSystem::collect_free_taxi_points() const {
+  std::vector<Point> points;
+  points.reserve(taxi_map_.size());
+  for (const auto &[id, taxi] : taxi_map_) {
+    (void)id;
+    if (taxi.status == TaxiStatus::free) {
+      points.push_back(make_point(taxi));
+    }
+  }
+  return points;
+}
+
+bool TaxiSystem::rebuild_spatial_index(const char *operation) {
+  const std::vector<Point> free_taxis = collect_free_taxi_points();
+  spatial_index_->rebuild(free_taxis);
+  if (spatial_index_->size() != free_taxis.size()) {
+    std::ostringstream stream;
+    stream << "rebuild verification failed expected=" << free_taxis.size()
+           << " actual=" << spatial_index_->size();
+    log_error(operation, stream.str());
+    return false;
+  }
+
+  std::ostringstream stream;
+  stream << "rebuilt spatial index free_taxi_count=" << free_taxis.size();
+  log_info(operation, stream.str());
+  return true;
+}
+
+bool TaxiSystem::remove_from_spatial_index(const Taxi &taxi,
+                                           const char *operation) {
+  if (spatial_index_->erase(taxi.id)) {
+    return true;
+  }
+
+  log_error(operation,
+            "taxi_id=" + std::to_string(taxi.id) +
+                " missing from spatial index, triggering rebuild");
+  if (!rebuild_spatial_index(operation)) {
+    return false;
+  }
+
+  if (!spatial_index_->erase(taxi.id)) {
+    log_error(operation, "taxi_id=" + std::to_string(taxi.id) +
+                             " still missing after rebuild");
+    return false;
+  }
+  return true;
+}
+
+bool TaxiSystem::upsert_into_spatial_index(const Taxi &taxi,
+                                           const char *operation) {
+  if (spatial_index_->upsert(make_point(taxi))) {
+    return true;
+  }
+
+  log_error(operation,
+            "failed to sync taxi_id=" + std::to_string(taxi.id) +
+                " into spatial index, triggering rebuild");
+  return rebuild_spatial_index(operation);
+}
