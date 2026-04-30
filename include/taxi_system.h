@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dispatch_batch.h"
 #include "dispatch_strategy.h"
 #include "requestcontext.h"
 #include "spatial_index.h"
@@ -23,6 +24,8 @@ public:
   bool set_taxi_offline(int id);
   bool update_taxi_position(int id, double x, double y);
   bool update_taxi_status(int id, TaxiStatus status);
+  bool apply_assignment(IRequestContext &request,
+                        const Assignment &assignment);
   std::optional<int> dispatch_nearest(IRequestContext &request, double radius);
   std::optional<int> dispatch_nearest(int customer_id, double x, double y,
                                       double radius);

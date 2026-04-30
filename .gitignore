@@ -24,3 +24,14 @@ Testing/
 cmake_install.cmake
 build_*.exe
 compat_*.exe
+
+# Local datasets and generated normalized data.
+data/datasets/**
+data/normalized/**
+!data/datasets/
+!data/datasets/nyc-taxi-trip-duration/
+!data/datasets/nyc-taxi-trip-duration/README.md
+!data/datasets/nyc-taxi-trip-duration/raw/
+!data/datasets/nyc-taxi-trip-duration/raw/.gitkeep
+!data/normalized/
+!data/normalized/README.md

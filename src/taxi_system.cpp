@@ -221,6 +221,56 @@ bool TaxiSystem::update_taxi_status(int id, TaxiStatus status) {
   return true;
 }
 
+bool TaxiSystem::apply_assignment(IRequestContext &request,
+                                  const Assignment &assignment) {
+  if (assignment.request_id != request.request_id()) {
+    log_error("TaxiSystem::apply_assignment",
+              "assignment request_id=" + std::to_string(assignment.request_id) +
+                  " does not match request_id=" +
+                  std::to_string(request.request_id()));
+    return false;
+  }
+
+  if (request.status() != RequestStatus::pending) {
+    log_error("TaxiSystem::apply_assignment",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " is not pending, status=" + to_string(request.status()));
+    return false;
+  }
+
+  const int taxi_id = assignment.taxi_id;
+  const Taxi *selected_taxi = find_taxi(taxi_id);
+  if (!selected_taxi || selected_taxi->status != TaxiStatus::free) {
+    log_error("TaxiSystem::apply_assignment",
+              "taxi_id=" + std::to_string(taxi_id) +
+                  " is not available for request_id=" +
+                  std::to_string(request.request_id()));
+    return false;
+  }
+
+  if (!update_taxi_status(taxi_id, TaxiStatus::occupy)) {
+    log_error("TaxiSystem::apply_assignment",
+              "failed to occupy taxi_id=" + std::to_string(taxi_id) +
+                  " for request_id=" + std::to_string(request.request_id()));
+    return false;
+  }
+
+  if (!request.assign_taxi(taxi_id)) {
+    log_error("TaxiSystem::apply_assignment",
+              "request_id=" + std::to_string(request.request_id()) +
+                  " failed to bind taxi_id=" + std::to_string(taxi_id));
+    release_occupied_taxi(taxi_id, "TaxiSystem::apply_assignment");
+    return false;
+  }
+
+  std::ostringstream stream;
+  stream << "request_id=" << request.request_id()
+         << " assigned taxi_id=" << taxi_id
+         << " pickup_cost=" << assignment.pickup_cost;
+  log_info("TaxiSystem::apply_assignment", stream.str());
+  return true;
+}
+
 std::optional<int> TaxiSystem::dispatch_nearest(IRequestContext &request,
                                                 double radius) {
   if (request.status() != RequestStatus::pending) {
@@ -252,30 +302,11 @@ std::optional<int> TaxiSystem::dispatch_nearest(IRequestContext &request,
     return std::nullopt;
   }
 
-  const Taxi *selected_taxi = find_taxi(*taxi_id);
-  if (!selected_taxi || selected_taxi->status != TaxiStatus::free) {
-    log_error("TaxiSystem::dispatch_nearest",
-              "taxi_id=" + std::to_string(*taxi_id) +
-                  " is not available for request_id=" +
-                  std::to_string(request.request_id()));
+  if (!apply_assignment(request,
+                        Assignment(*taxi_id, request.request_id(), 0))) {
     return std::nullopt;
   }
 
-  if (!update_taxi_status(*taxi_id, TaxiStatus::occupy)) {
-    log_error("TaxiSystem::dispatch_nearest",
-              "customer_id=" + std::to_string(customer_id) +
-                  " failed to occupy taxi_id=" + std::to_string(*taxi_id));
-    return std::nullopt;
-  }
-
-  if (!request.assign_taxi(*taxi_id)) {
-    log_error("TaxiSystem::dispatch_nearest",
-              "request_id=" + std::to_string(request.request_id()) +
-                  " failed to bind taxi_id=" + std::to_string(*taxi_id));
-    release_occupied_taxi(*taxi_id, "TaxiSystem::dispatch_nearest");
-    return std::nullopt;
-  }
-  
   std::ostringstream stream;
   stream << "request_id=" << request.request_id() << " customer_id="
          << customer_id << " assigned taxi_id=" << *taxi_id

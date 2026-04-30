@@ -54,5 +54,101 @@ int main() {
   assert(batch.drivers[0].taxi_id == 9);
   assert(batch.requests[0].request_id == 100);
 
+  assert(is_available_for_batch(driver, 3600));
+  assert(!is_available_for_batch(
+      DriverSnapshot(10, Point(0.0, 0.0, 10), 12, TaxiStatus::occupy, 3600),
+      3600));
+  assert(!is_available_for_batch(
+      DriverSnapshot(11, Point(0.0, 0.0, 11), 12, TaxiStatus::free, 3700),
+      3600));
+  assert(is_valid_batch_request(request));
+  assert(!is_valid_batch_request(PassengerRequest()));
+  assert(is_request_ready_for_batch(request, 3600));
+  assert(!is_request_ready_for_batch(request, 3599));
+  assert(is_same_pickup_tile(driver, request));
+
+  assert(estimate_pickup_cost(Point(0.0, 0.0, 1), Point(3.0, 4.0, 2), 10.0) ==
+         50);
+
+  std::vector<DriverSnapshot> batch_drivers;
+  batch_drivers.emplace_back(1, Point(0.0, 0.0, 1), 1, TaxiStatus::free, 100);
+  batch_drivers.emplace_back(2, Point(5.0, 0.0, 2), 2, TaxiStatus::free, 100);
+  batch_drivers.emplace_back(3, Point(1.0, 0.0, 3), 1, TaxiStatus::occupy,
+                             100);
+  batch_drivers.emplace_back(4, Point(2.0, 0.0, 4), 1, TaxiStatus::free, 200);
+
+  std::vector<PassengerRequest> batch_requests;
+  batch_requests.emplace_back(101, 1001, 100, Point(0.9, 0.0, 101),
+                              Point(9.0, 9.0, 101), 1, 9);
+  batch_requests.emplace_back(102, 1002, 100, Point(4.2, 0.0, 102),
+                              Point(9.0, 9.0, 102), 2, 9);
+  batch_requests.emplace_back(103, 1003, 100, Point(20.0, 0.0, 103),
+                              Point(9.0, 9.0, 103), 3, 9);
+  batch_requests.emplace_back(104, 1004, 200, Point(0.1, 0.0, 104),
+                              Point(9.0, 9.0, 104), 1, 9);
+
+  BatchDispatchInput matching_batch(100, batch_drivers, batch_requests);
+  const auto candidate_edges =
+      generate_candidate_edges(matching_batch, 2.0, 10.0);
+  assert(candidate_edges.size() == 2);
+  assert(candidate_edges[0].taxi_id == 1);
+  assert(candidate_edges[0].request_id == 101);
+  assert(candidate_edges[0].pickup_cost == 9);
+  assert(candidate_edges[1].taxi_id == 2);
+  assert(candidate_edges[1].request_id == 102);
+  assert(candidate_edges[1].pickup_cost == 8);
+
+  assert(generate_candidate_edges(matching_batch, -1.0).empty());
+  assert(generate_candidate_edges(matching_batch, 2.0, 0.0).empty());
+
+  std::vector<DriverSnapshot> dense_drivers;
+  dense_drivers.emplace_back(1, Point(0.0, 0.0, 1), 1, TaxiStatus::free, 100);
+  dense_drivers.emplace_back(2, Point(0.5, 0.0, 2), 1, TaxiStatus::free, 100);
+  dense_drivers.emplace_back(3, Point(1.0, 0.0, 3), 2, TaxiStatus::free, 100);
+
+  std::vector<PassengerRequest> dense_requests;
+  dense_requests.emplace_back(201, 2001, 100, Point(0.4, 0.0, 201),
+                              Point(9.0, 9.0, 201), 1, 9);
+
+  BatchDispatchInput dense_batch(100, dense_drivers, dense_requests);
+
+  const CandidateEdgeOptions top_one_options(2.0, 10.0, 1);
+  const auto top_one_edges =
+      generate_candidate_edges(dense_batch, top_one_options);
+  assert(top_one_edges.size() == 1);
+  assert(top_one_edges[0].taxi_id == 2);
+  assert(top_one_edges[0].request_id == 201);
+  assert(top_one_edges[0].pickup_cost == 1);
+
+  const CandidateEdgeOptions same_tile_options(2.0, 10.0, 0, true);
+  const auto same_tile_edges =
+      generate_candidate_edges(dense_batch, same_tile_options);
+  assert(same_tile_edges.size() == 2);
+  assert(same_tile_edges[0].taxi_id == 2);
+  assert(same_tile_edges[1].taxi_id == 1);
+
+  std::vector<CandidateEdge> greedy_edges;
+  greedy_edges.emplace_back(1, 101, 50);
+  greedy_edges.emplace_back(2, 101, 20);
+  greedy_edges.emplace_back(2, 102, 10);
+  greedy_edges.emplace_back(3, 102, 30);
+
+  const auto greedy_assignments = greedy_batch_assign(greedy_edges);
+  assert(greedy_assignments.size() == 2);
+  assert(greedy_assignments[0].taxi_id == 2);
+  assert(greedy_assignments[0].request_id == 102);
+  assert(greedy_assignments[0].pickup_cost == 10);
+  assert(greedy_assignments[1].taxi_id == 1);
+  assert(greedy_assignments[1].request_id == 101);
+  assert(greedy_assignments[1].pickup_cost == 50);
+
+  const auto baseline_assignments =
+      greedy_batch_assign(matching_batch, 2.0, 10.0);
+  assert(baseline_assignments.size() == 2);
+  assert(baseline_assignments[0].taxi_id == 2);
+  assert(baseline_assignments[0].request_id == 102);
+  assert(baseline_assignments[1].taxi_id == 1);
+  assert(baseline_assignments[1].request_id == 101);
+
   return 0;
 }

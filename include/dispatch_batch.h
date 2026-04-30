@@ -2,6 +2,11 @@
 
 #include "taxi_domain.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cmath>
+#include <limits>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -98,6 +103,26 @@ struct CandidateEdge {
         pickup_cost(pickup_cost_value) {}
 };
 
+struct CandidateEdgeOptions {
+  double radius;
+  double seconds_per_distance_unit;
+  std::size_t max_edges_per_request;
+  bool same_tile_only;
+
+  CandidateEdgeOptions()
+      : radius(0.0), seconds_per_distance_unit(1.0),
+        max_edges_per_request(0), same_tile_only(false) {}
+
+  CandidateEdgeOptions(double radius_value,
+                       double seconds_per_distance_unit_value,
+                       std::size_t max_edges_per_request_value = 0,
+                       bool same_tile_only_value = false)
+      : radius(radius_value),
+        seconds_per_distance_unit(seconds_per_distance_unit_value),
+        max_edges_per_request(max_edges_per_request_value),
+        same_tile_only(same_tile_only_value) {}
+};
+
 struct BatchDispatchInput {
   TimeSeconds batch_time;
   std::vector<DriverSnapshot> drivers;
@@ -111,3 +136,146 @@ struct BatchDispatchInput {
       : batch_time(batch_time_value), drivers(std::move(driver_values)),
         requests(std::move(request_values)) {}
 };
+
+inline bool is_available_for_batch(const DriverSnapshot &driver,
+                                   TimeSeconds batch_time) {
+  return driver.taxi_id >= 0 && driver.status == TaxiStatus::free &&
+         driver.available_time <= batch_time;
+}
+
+inline bool is_valid_batch_request(const PassengerRequest &request) {
+  return request.request_id >= 0 && request.customer_id >= 0;
+}
+
+inline bool is_request_ready_for_batch(const PassengerRequest &request,
+                                       TimeSeconds batch_time) {
+  return is_valid_batch_request(request) && request.request_time <= batch_time;
+}
+
+inline bool is_same_pickup_tile(const DriverSnapshot &driver,
+                                const PassengerRequest &request) {
+  return driver.current_tile != invalid_tile_id &&
+         request.pickup_tile != invalid_tile_id &&
+         driver.current_tile == request.pickup_tile;
+}
+
+inline int estimate_pickup_cost(const Point &driver_location,
+                                const Point &pickup_location,
+                                double seconds_per_distance_unit = 1.0) {
+  if (seconds_per_distance_unit <= 0.0) {
+    return std::numeric_limits<int>::max();
+  }
+
+  const double distance = std::sqrt(dist_sq(driver_location, pickup_location));
+  const double cost = distance * seconds_per_distance_unit;
+  if (!std::isfinite(cost) ||
+      cost >= static_cast<double>(std::numeric_limits<int>::max())) {
+    return std::numeric_limits<int>::max();
+  }
+
+  return static_cast<int>(std::llround(cost));
+}
+
+inline std::vector<CandidateEdge>
+generate_candidate_edges(const BatchDispatchInput &batch,
+                         const CandidateEdgeOptions &options) {
+  std::vector<CandidateEdge> edges;
+  if (options.radius < 0.0 || options.seconds_per_distance_unit <= 0.0) {
+    return edges;
+  }
+
+  const double radius_sq = options.radius * options.radius;
+  for (const auto &request : batch.requests) {
+    if (!is_request_ready_for_batch(request, batch.batch_time)) {
+      continue;
+    }
+
+    std::vector<CandidateEdge> request_edges;
+    for (const auto &driver : batch.drivers) {
+      if (!is_available_for_batch(driver, batch.batch_time)) {
+        continue;
+      }
+      if (options.same_tile_only && !is_same_pickup_tile(driver, request)) {
+        continue;
+      }
+
+      if (dist_sq(driver.location, request.pickup_location) > radius_sq) {
+        continue;
+      }
+
+      const int cost = estimate_pickup_cost(
+          driver.location, request.pickup_location,
+          options.seconds_per_distance_unit);
+      if (cost == std::numeric_limits<int>::max()) {
+        continue;
+      }
+
+      request_edges.emplace_back(driver.taxi_id, request.request_id, cost);
+    }
+
+    std::sort(request_edges.begin(), request_edges.end(),
+              [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+                if (lhs.pickup_cost != rhs.pickup_cost) {
+                  return lhs.pickup_cost < rhs.pickup_cost;
+                }
+                return lhs.taxi_id < rhs.taxi_id;
+              });
+
+    if (options.max_edges_per_request > 0 &&
+        request_edges.size() > options.max_edges_per_request) {
+      request_edges.resize(options.max_edges_per_request);
+    }
+
+    edges.insert(edges.end(), request_edges.begin(), request_edges.end());
+  }
+
+  return edges;
+}
+
+inline std::vector<CandidateEdge>
+generate_candidate_edges(const BatchDispatchInput &batch, double radius,
+                         double seconds_per_distance_unit = 1.0) {
+  return generate_candidate_edges(
+      batch, CandidateEdgeOptions(radius, seconds_per_distance_unit));
+}
+
+inline std::vector<Assignment>
+greedy_batch_assign(std::vector<CandidateEdge> edges) {
+  std::sort(edges.begin(), edges.end(),
+            [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+              if (lhs.pickup_cost != rhs.pickup_cost) {
+                return lhs.pickup_cost < rhs.pickup_cost;
+              }
+              if (lhs.request_id != rhs.request_id) {
+                return lhs.request_id < rhs.request_id;
+              }
+              return lhs.taxi_id < rhs.taxi_id;
+            });
+
+  std::unordered_set<int> used_taxis;
+  std::unordered_set<int> served_requests;
+  std::vector<Assignment> assignments;
+
+  for (const auto &edge : edges) {
+    if (edge.taxi_id < 0 || edge.request_id < 0) {
+      continue;
+    }
+    if (used_taxis.count(edge.taxi_id) != 0 ||
+        served_requests.count(edge.request_id) != 0) {
+      continue;
+    }
+
+    used_taxis.insert(edge.taxi_id);
+    served_requests.insert(edge.request_id);
+    assignments.emplace_back(edge.taxi_id, edge.request_id, edge.pickup_cost);
+  }
+
+  return assignments;
+}
+
+inline std::vector<Assignment>
+greedy_batch_assign(const BatchDispatchInput &batch, double radius,
+                    double seconds_per_distance_unit = 1.0) {
+  return greedy_batch_assign(
+      generate_candidate_edges(batch, radius, seconds_per_distance_unit));
+}

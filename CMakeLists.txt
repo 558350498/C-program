@@ -10,8 +10,10 @@ include(CTest)
 add_library(
   taxi_core
   src/taxi_domain.cpp
+  src/dispatch_replay.cpp
   src/kd_tree_spatial_index.cpp
   src/dispatch_strategy.cpp
+  src/mcmf_batch_strategy.cpp
   src/requestcontext.cpp
   src/taxi_system.cpp)
 
@@ -36,6 +38,12 @@ if(BUILD_TESTING)
   add_executable(dispatch_batch_test tests/dispatch_batch_test.cpp)
   target_link_libraries(dispatch_batch_test PRIVATE taxi_core)
 
+  add_executable(mcmf_batch_strategy_test tests/mcmf_batch_strategy_test.cpp)
+  target_link_libraries(mcmf_batch_strategy_test PRIVATE taxi_core)
+
+  add_executable(dispatch_replay_test tests/dispatch_replay_test.cpp)
+  target_link_libraries(dispatch_replay_test PRIVATE taxi_core)
+
   add_executable(taxi_system_test tests/taxi_system_test.cpp)
   target_link_libraries(taxi_system_test PRIVATE taxi_core)
 
@@ -43,6 +51,8 @@ if(BUILD_TESTING)
   add_test(NAME requestcontext_test COMMAND requestcontext_test)
   add_test(NAME dispatch_strategy_test COMMAND dispatch_strategy_test)
   add_test(NAME dispatch_batch_test COMMAND dispatch_batch_test)
+  add_test(NAME mcmf_batch_strategy_test COMMAND mcmf_batch_strategy_test)
+  add_test(NAME dispatch_replay_test COMMAND dispatch_replay_test)
   add_test(NAME taxi_system_test COMMAND taxi_system_test)
   add_test(NAME taxi_demo_smoke COMMAND taxi_demo)
 
@@ -53,6 +63,10 @@ if(BUILD_TESTING)
   set_tests_properties(dispatch_strategy_test PROPERTIES LABELS
                                                         "smoke;dispatch")
   set_tests_properties(dispatch_batch_test PROPERTIES LABELS "smoke;batch")
+  set_tests_properties(mcmf_batch_strategy_test PROPERTIES LABELS
+                                                       "smoke;batch;mcmf")
+  set_tests_properties(dispatch_replay_test PROPERTIES LABELS
+                                                       "smoke;replay")
   set_tests_properties(taxi_system_test PROPERTIES LABELS "smoke;taxi-system")
   set_tests_properties(taxi_demo_smoke PROPERTIES LABELS "smoke;demo")
 
@@ -62,9 +76,12 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:requestcontext_test>
     COMMAND $<TARGET_FILE:dispatch_strategy_test>
     COMMAND $<TARGET_FILE:dispatch_batch_test>
+    COMMAND $<TARGET_FILE:mcmf_batch_strategy_test>
+    COMMAND $<TARGET_FILE:dispatch_replay_test>
     COMMAND $<TARGET_FILE:taxi_system_test>
     COMMAND $<TARGET_FILE:taxi_demo>
     DEPENDS kd_tree_spatial_index_test requestcontext_test dispatch_strategy_test
-            dispatch_batch_test taxi_system_test taxi_demo
+            dispatch_batch_test mcmf_batch_strategy_test dispatch_replay_test
+            taxi_system_test taxi_demo
     USES_TERMINAL)
 endif()

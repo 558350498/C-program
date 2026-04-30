@@ -120,6 +120,50 @@ int main() {
   assert(!system.cancel_request(first_request));
   assert(!system.start_trip(first_request));
 
+  RequestContext applied_request(108, 108, Point(1.0, 0.0, 108),
+                                 Point(4.0, 0.0, 108));
+  assert(system.apply_assignment(applied_request, Assignment(first, 108, 12)));
+  assert(applied_request.taxi_id().has_value());
+  assert(*applied_request.taxi_id() == first);
+  assert(applied_request.status() == RequestStatus::dispatched);
+  assert(!system.set_taxi_offline(first));
+  assert(system.complete_trip(applied_request));
+
+  RequestContext mismatch_request(109, 109, Point(1.0, 0.0, 109),
+                                  Point(4.0, 0.0, 109));
+  assert(!system.apply_assignment(mismatch_request, Assignment(first, 999, 12)));
+  assert(mismatch_request.status() == RequestStatus::pending);
+  assert(!mismatch_request.taxi_id().has_value());
+
+  assert(!system.apply_assignment(mismatch_request, Assignment(999, 109, 12)));
+  assert(mismatch_request.status() == RequestStatus::pending);
+  assert(!mismatch_request.taxi_id().has_value());
+
+  RequestContext occupied_request(110, 110, Point(1.0, 0.0, 110),
+                                  Point(4.0, 0.0, 110));
+  assert(system.apply_assignment(occupied_request, Assignment(first, 110, 12)));
+  RequestContext blocked_request(111, 111, Point(1.0, 0.0, 111),
+                                 Point(4.0, 0.0, 111));
+  assert(!system.apply_assignment(blocked_request, Assignment(first, 111, 12)));
+  assert(blocked_request.status() == RequestStatus::pending);
+  assert(!blocked_request.taxi_id().has_value());
+  assert(system.complete_trip(occupied_request));
+
+  RequestContext canceled_apply_request(112, 112, Point(1.0, 0.0, 112),
+                                        Point(4.0, 0.0, 112));
+  assert(canceled_apply_request.cancel_request());
+  assert(!system.apply_assignment(canceled_apply_request,
+                                  Assignment(first, 112, 12)));
+  assert(canceled_apply_request.status() == RequestStatus::canceled);
+
+  RejectAssignRequest bad_apply_request(113, 113, Point(1.0, 0.0, 113));
+  assert(!system.apply_assignment(bad_apply_request, Assignment(first, 113, 12)));
+  RequestContext after_bad_apply_request(114, 114, Point(1.0, 0.0, 114),
+                                         Point(4.0, 0.0, 114));
+  assert(system.apply_assignment(after_bad_apply_request,
+                                 Assignment(first, 114, 12)));
+  assert(system.complete_trip(after_bad_apply_request));
+
   assert(!system.dispatch_nearest(101, 0.5, 0.0, -1.0).has_value());
 
   assert(system.update_taxi_position(first, 1.0, 0.0));
