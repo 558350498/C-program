@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -15,8 +16,12 @@ class TaxiSystem {
 public:
   explicit TaxiSystem(std::unique_ptr<ISpatialIndex> spatial_index = nullptr,
                       std::unique_ptr<IDispatchStrategy> dispatch_strategy =
-                          nullptr);
+                          nullptr,
+                      bool logging_enabled = true);
   ~TaxiSystem();
+
+  void set_logging_enabled(bool enabled);
+  bool logging_enabled() const;
 
   int create_taxi();
   bool register_taxi(int id);
@@ -38,8 +43,11 @@ private:
   std::unique_ptr<ISpatialIndex> spatial_index_;
   std::unique_ptr<IDispatchStrategy> dispatch_strategy_;
   int next_taxi_id_;
+  bool logging_enabled_;
 
   Taxi *find_taxi(int id);
+  void log_error(const char *operation, const std::string &message) const;
+  void log_info(const char *operation, const std::string &message) const;
   std::vector<Point> collect_free_taxi_points() const;
   bool rebuild_spatial_index(const char *operation);
   bool remove_from_spatial_index(const Taxi &taxi, const char *operation);

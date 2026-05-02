@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,30 +18,44 @@ import (
 type csvRow map[string]string
 
 type options struct {
-	inputPath  string
-	outputPath string
-	limit      int
-	baseTime   string
+	inputPath     string
+	outputPath    string
+	driversOutput string
+	limit         int
+	baseTime      string
+	driverEvery   int
+	driverRadius  float64
+	seed          int64
 }
 
 func main() {
 	var opts options
 	flag.StringVar(&opts.inputPath, "input", "", "input Kaggle taxi trip CSV")
 	flag.StringVar(&opts.outputPath, "output", "requests.csv", "output normalized requests CSV")
+	flag.StringVar(&opts.driversOutput, "drivers-output", "drivers.csv", "output synthesized drivers CSV")
 	flag.IntVar(&opts.limit, "limit", 1000, "maximum valid rows to write; <=0 means no limit")
 	flag.StringVar(&opts.baseTime, "base-time", "", "optional base time in RFC3339 or taxi timestamp format")
+	flag.IntVar(&opts.driverEvery, "driver-every", 2, "synthesize one driver for every N valid requests; 2 means about 0.5 driver per request")
+	flag.Float64Var(&opts.driverRadius, "driver-radius", 0.003, "random driver offset radius around pickup point in lon/lat degrees")
+	flag.Int64Var(&opts.seed, "seed", 20260503, "random seed for synthesized drivers")
 	flag.Parse()
 
 	if opts.inputPath == "" {
 		fatalf("missing -input")
 	}
+	if opts.driverEvery <= 0 {
+		fatalf("-driver-every must be positive")
+	}
+	if opts.driverRadius < 0 {
+		fatalf("-driver-radius must be non-negative")
+	}
 
-	if err := convertRequests(opts); err != nil {
+	if err := convertRequestsAndDrivers(opts); err != nil {
 		fatalf("%v", err)
 	}
 }
 
-func convertRequests(opts options) error {
+func convertRequestsAndDrivers(opts options) error {
 	input, err := os.Open(opts.inputPath)
 	if err != nil {
 		return err
@@ -55,6 +72,9 @@ func convertRequests(opts options) error {
 	}
 	normalizeHeader(header)
 
+	if err := ensureParentDir(opts.outputPath); err != nil {
+		return err
+	}
 	output, err := os.Create(opts.outputPath)
 	if err != nil {
 		return err
@@ -64,9 +84,27 @@ func convertRequests(opts options) error {
 	writer := csv.NewWriter(output)
 	defer writer.Flush()
 
+	if err := ensureParentDir(opts.driversOutput); err != nil {
+		return err
+	}
+	driversOutput, err := os.Create(opts.driversOutput)
+	if err != nil {
+		return err
+	}
+	defer driversOutput.Close()
+
+	driversWriter := csv.NewWriter(driversOutput)
+	defer driversWriter.Flush()
+
 	if err := writer.Write([]string{
 		"request_id", "customer_id", "request_time", "pickup_x", "pickup_y",
 		"dropoff_x", "dropoff_y", "pickup_tile", "dropoff_tile",
+	}); err != nil {
+		return err
+	}
+
+	if err := driversWriter.Write([]string{
+		"taxi_id", "x", "y", "tile", "available_time", "status",
 	}); err != nil {
 		return err
 	}
@@ -80,7 +118,8 @@ func convertRequests(opts options) error {
 		base = &parsed
 	}
 
-	written := 0
+	rng := rand.New(rand.NewSource(opts.seed))
+	requests := make([]normalizedRequest, 0)
 	rowNumber := 1
 	for {
 		record, err := reader.Read()
@@ -93,44 +132,88 @@ func convertRequests(opts options) error {
 		rowNumber++
 
 		row := makeRow(header, record)
-		request, err := normalizeRequest(row, rowNumber, base)
+		request, err := normalizeRequest(row, rowNumber)
 		if err != nil {
 			continue
 		}
-		if base == nil {
-			parsed := request.pickupTime
-			base = &parsed
-			request.requestTime = 0
-		}
 
+		requests = append(requests, request)
+		if opts.limit > 0 && len(requests) >= opts.limit {
+			break
+		}
+	}
+
+	if len(requests) == 0 {
+		fmt.Printf("wrote 0 normalized requests to %s\n", opts.outputPath)
+		fmt.Printf("wrote 0 synthesized drivers to %s\n", opts.driversOutput)
+		return nil
+	}
+
+	if base == nil {
+		minPickupTime := requests[0].pickupTime
+		for _, request := range requests[1:] {
+			if request.pickupTime.Before(minPickupTime) {
+				minPickupTime = request.pickupTime
+			}
+		}
+		base = &minPickupTime
+	}
+
+	for index := range requests {
+		requestTime := int64(requests[index].pickupTime.Sub(*base).Seconds())
+		if requestTime < 0 {
+			return fmt.Errorf("request_id=%d before base time", requests[index].requestID)
+		}
+		requests[index].requestTime = requestTime
+	}
+
+	sort.Slice(requests, func(i, j int) bool {
+		if requests[i].requestTime != requests[j].requestTime {
+			return requests[i].requestTime < requests[j].requestTime
+		}
+		return requests[i].requestID < requests[j].requestID
+	})
+
+	written := 0
+	driversWritten := 0
+	for _, request := range requests {
 		if err := writer.Write(request.csvRecord()); err != nil {
 			return err
 		}
 		written++
-		if opts.limit > 0 && written >= opts.limit {
-			break
+
+		if shouldSynthesizeDriver(written, opts.driverEvery) {
+			driver := synthesizeDriver(request, driversWritten+1, opts.driverRadius, rng)
+			if err := driversWriter.Write(driver.csvRecord()); err != nil {
+				return err
+			}
+			driversWritten++
 		}
 	}
 
 	if err := writer.Error(); err != nil {
 		return err
 	}
+	if err := driversWriter.Error(); err != nil {
+		return err
+	}
 
 	fmt.Printf("wrote %d normalized requests to %s\n", written, opts.outputPath)
+	fmt.Printf("wrote %d synthesized drivers to %s\n", driversWritten, opts.driversOutput)
 	return nil
 }
 
 type normalizedRequest struct {
-	requestID  int
-	customerID int
+	requestID   int
+	customerID  int
 	requestTime int64
-	pickupX    float64
-	pickupY    float64
-	dropoffX   float64
-	dropoffY   float64
-	pickupTile int
+	pickupX     float64
+	pickupY     float64
+	dropoffX    float64
+	dropoffY    float64
+	pickupTile  int
 	dropoffTile int
-	pickupTime time.Time
+	pickupTime  time.Time
 }
 
 func (r normalizedRequest) csvRecord() []string {
@@ -147,7 +230,58 @@ func (r normalizedRequest) csvRecord() []string {
 	}
 }
 
-func normalizeRequest(row csvRow, rowNumber int, base *time.Time) (normalizedRequest, error) {
+type normalizedDriver struct {
+	taxiID        int
+	x             float64
+	y             float64
+	tile          int
+	availableTime int64
+	status        string
+}
+
+func (d normalizedDriver) csvRecord() []string {
+	return []string{
+		strconv.Itoa(d.taxiID),
+		formatFloat(d.x),
+		formatFloat(d.y),
+		strconv.Itoa(d.tile),
+		strconv.FormatInt(d.availableTime, 10),
+		d.status,
+	}
+}
+
+func shouldSynthesizeDriver(validRequestIndex int, driverEvery int) bool {
+	return (validRequestIndex-1)%driverEvery == 0
+}
+
+func synthesizeDriver(request normalizedRequest, taxiID int, radius float64, rng *rand.Rand) normalizedDriver {
+	x, y := randomPointInRadius(request.pickupX, request.pickupY, radius, rng)
+	if !validNYCCoordinate(x, y) {
+		x = request.pickupX
+		y = request.pickupY
+	}
+
+	return normalizedDriver{
+		taxiID:        taxiID,
+		x:             x,
+		y:             y,
+		tile:          simpleTile(x, y),
+		availableTime: 0,
+		status:        "free",
+	}
+}
+
+func randomPointInRadius(centerX, centerY, radius float64, rng *rand.Rand) (float64, float64) {
+	if radius == 0 {
+		return centerX, centerY
+	}
+
+	angle := rng.Float64() * 2.0 * math.Pi
+	distance := math.Sqrt(rng.Float64()) * radius
+	return centerX + math.Cos(angle)*distance, centerY + math.Sin(angle)*distance
+}
+
+func normalizeRequest(row csvRow, rowNumber int) (normalizedRequest, error) {
 	pickupTime, err := parseTaxiTime(first(row, "pickup_datetime", "tpep_pickup_datetime", "lpep_pickup_datetime"))
 	if err != nil {
 		return normalizedRequest{}, err
@@ -174,14 +308,6 @@ func normalizeRequest(row csvRow, rowNumber int, base *time.Time) (normalizedReq
 		return normalizedRequest{}, fmt.Errorf("coordinates outside NYC bounds")
 	}
 
-	requestTime := int64(0)
-	if base != nil {
-		requestTime = int64(pickupTime.Sub(*base).Seconds())
-		if requestTime < 0 {
-			return normalizedRequest{}, fmt.Errorf("request before base time")
-		}
-	}
-
 	requestID := rowNumber - 1
 	if idText := first(row, "id", "trip_id"); idText != "" {
 		if parsedID, err := parseStableID(idText); err == nil {
@@ -190,17 +316,25 @@ func normalizeRequest(row csvRow, rowNumber int, base *time.Time) (normalizedReq
 	}
 
 	return normalizedRequest{
-		requestID: requestID,
-		customerID: requestID,
-		requestTime: requestTime,
-		pickupX: pickupX,
-		pickupY: pickupY,
-		dropoffX: dropoffX,
-		dropoffY: dropoffY,
-		pickupTile: simpleTile(pickupX, pickupY),
+		requestID:   requestID,
+		customerID:  requestID,
+		requestTime: 0,
+		pickupX:     pickupX,
+		pickupY:     pickupY,
+		dropoffX:    dropoffX,
+		dropoffY:    dropoffY,
+		pickupTile:  simpleTile(pickupX, pickupY),
 		dropoffTile: simpleTile(dropoffX, dropoffY),
-		pickupTime: pickupTime,
+		pickupTime:  pickupTime,
 	}, nil
+}
+
+func ensureParentDir(path string) error {
+	parent := filepath.Dir(path)
+	if parent == "." || parent == "" {
+		return nil
+	}
+	return os.MkdirAll(parent, 0755)
 }
 
 func normalizeHeader(header []string) {

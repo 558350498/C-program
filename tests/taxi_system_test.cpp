@@ -88,6 +88,10 @@ private:
 
 int main() {
   TaxiSystem system;
+  assert(system.logging_enabled());
+  system.set_logging_enabled(false);
+  assert(!system.logging_enabled());
+  system.set_logging_enabled(true);
 
   const int first = system.create_taxi();
   const int second = system.create_taxi();

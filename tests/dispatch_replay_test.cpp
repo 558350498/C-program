@@ -1,5 +1,6 @@
 #include "dispatch_replay.h"
 
+#include <string>
 #include <vector>
 
 #define REQUIRE(condition)                                                      \
@@ -25,15 +26,42 @@ int main() {
       0, 720, 30, 600,
       CandidateEdgeOptions(10.0, 10.0, 0, false));
 
-  const DispatchReplayMetrics metrics =
-      simulator.run(drivers, requests, options);
+  const DispatchReplayReport report =
+      simulator.run_report(drivers, requests, options);
+  const DispatchReplayMetrics metrics = report.metrics;
   REQUIRE(metrics.total_requests == 2);
   REQUIRE(metrics.assigned_requests == 2);
   REQUIRE(metrics.completed_requests == 2);
   REQUIRE(metrics.unserved_requests == 0);
   REQUIRE(metrics.batch_runs == 25);
+  REQUIRE(metrics.candidate_edges_total == 2);
+  REQUIRE(metrics.requests_with_candidate_edges_total == 2);
+  REQUIRE(metrics.requests_without_candidate_edges_total == 0);
   REQUIRE(metrics.mcmf_assigned_total == 2);
   REQUIRE(metrics.applied_pickup_cost_total == 50);
+  REQUIRE(assignment_rate(metrics) == 1.0);
+  REQUIRE(completion_rate(metrics) == 1.0);
+  REQUIRE(average_applied_pickup_cost(metrics) == 25.0);
+  REQUIRE(report.batch_logs.size() == 25);
+
+  bool saw_first_assignment_batch = false;
+  for (const auto &log : report.batch_logs) {
+    if (log.batch_time == 30) {
+      REQUIRE(log.available_drivers == 1);
+      REQUIRE(log.pending_requests == 1);
+      REQUIRE(log.candidate_edges == 1);
+      REQUIRE(log.greedy_assigned == 1);
+      REQUIRE(log.mcmf_assigned == 1);
+      REQUIRE(log.applied_assignments == 1);
+      REQUIRE(log.applied_pickup_cost == 50);
+      saw_first_assignment_batch = true;
+    }
+  }
+  REQUIRE(saw_first_assignment_batch);
+
+  const std::string summary = format_dispatch_replay_report(report);
+  REQUIRE(summary.find("Dispatch replay summary") != std::string::npos);
+  REQUIRE(summary.find("candidate_edges=2") != std::string::npos);
 
   std::vector<PassengerRequest> unserved_requests;
   unserved_requests.emplace_back(201, 2001, 10, Point(100.0, 100.0, 201),
@@ -48,6 +76,8 @@ int main() {
   REQUIRE(unserved_metrics.assigned_requests == 0);
   REQUIRE(unserved_metrics.completed_requests == 0);
   REQUIRE(unserved_metrics.unserved_requests == 1);
+  REQUIRE(unserved_metrics.candidate_edges_total == 0);
+  REQUIRE(unserved_metrics.requests_without_candidate_edges_total == 2);
   REQUIRE(unserved_metrics.mcmf_assigned_total == 0);
 
   return 0;

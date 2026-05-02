@@ -41,8 +41,9 @@
 
 后续补充：
 
-- CSV 原始字段解析仍未接入，建议用 Go 单独实现预处理 CLI。
+- CSV 原始字段解析仍未接入，建议继续用 Go 单独实现预处理 CLI。
 - 经纬度到 tile 的映射规则仍未实现。
+- C++ 已接入标准化 `requests.csv` / `drivers.csv` loader。
 
 Go 预处理边界：
 
@@ -50,6 +51,13 @@ Go 预处理边界：
 - 输出：标准化 `requests.csv` 和 `drivers.csv`。
 - C++ 不直接依赖 Kaggle 字段名。
 - 第一版只做抽样、时间排序、坐标清洗和简单 tile 映射。
+
+C++ 标准化 CSV 读取边界：
+
+- `load_passenger_requests_csv` 读取 `requests.csv`。
+- `load_driver_snapshots_csv` 读取 `drivers.csv`。
+- loader 只依赖标准化字段，不依赖 Kaggle 原始字段名。
+- 坏行写入 `errors`，好行保留，便于先跑小样本。
 
 ### 2. 批量匹配输入
 
@@ -83,7 +91,11 @@ Go 预处理边界：
 当前实现：
 
 - `CandidateEdge` 记录候选匹配边。
+- `CandidateEdgeStats` 记录候选边生成过程中的司机数、请求数、候选边数和无候选请求数。
+- `CandidateEdgeGenerationResult` 同时返回候选边和统计信息。
 - `CandidateEdgeOptions` 控制半径、cost 单位、每个请求 top-k 和同 tile 粗筛。
+- `normalize_candidate_edges` 过滤非法边，并对重复 `taxi_id/request_id` 保留最低 cost。
+- `generate_candidate_edges_with_stats` 供 replay 和后续 CSV 数据质量排查使用。
 - `generate_candidate_edges` 只处理已到达 batch 时间的请求和当前可用司机。
 - `estimate_pickup_cost` 使用欧氏距离乘 `seconds_per_distance_unit`，输出整数 cost。
 
@@ -129,6 +141,7 @@ Go 预处理边界：
 - `tests/mcmf_batch_strategy_test.cpp`
 - `McmfBatchStrategy::assign(const std::vector<CandidateEdge>&)`
 - `McmfBatchStrategy::assign(const BatchDispatchInput&, const CandidateEdgeOptions&)`
+- MCMF 入口会先执行候选边规范化，避免非法边和重复边污染流图。
 
 第一版语义：
 
@@ -179,10 +192,56 @@ Go 预处理边界：
 
 ### 8. 指标与日志
 
-- 当前状态：未开始。
+- 当前状态：已完成第一版。
 
 - 记录匹配率、平均等待时间、平均接驾时间、未服务请求数。
 - 对批次构图、未服务决策、状态释放失败补日志。
+
+当前实现：
+
+- `DispatchReplayMetrics` 记录总请求数、派单数、完成数、未服务数、batch 数、候选边总数、greedy/MCMF 匹配数和总 cost、实际接驾 cost。
+- `DispatchReplayBatchLog` 记录每轮 batch 的可用司机数、pending 请求数、候选边数、无候选请求数、greedy/MCMF 结果和实际回写结果。
+- `DispatchReplayReport` 汇总总指标和 batch 日志。
+- `DispatchReplaySimulator::run_report` 返回完整报告。
+- `format_dispatch_replay_report` 输出命令行可读摘要。
+
+当前尚未做：
+
+- 平均等待时间。
+- CSV 输入后的数据质量报告。
+- 失败回写原因的结构化统计。
+
+## 第二轮解耦讨论建议
+
+当前已经可以开始讨论第二轮解耦，但不建议大拆。原因是现在真正阻塞 CSV 接入的不是算法接口，而是输入/输出边界和日志边界。
+
+建议优先考虑的小解耦：
+
+1. `TaxiSystem` 日志解耦
+   - 当前 `TaxiSystem` 直接写 `std::cerr` / `std::clog`。
+   - 接 CSV 批量回放后日志会非常吵。
+   - 当前已增加最小日志开关，replay 默认 silent。
+
+2. replay 输入解耦
+   - 当前 `DispatchReplaySimulator::run_report` 已经接收标准化内存对象。
+   - 当前已新增 CSV loader，把文件解析和 replay 核心分开。
+   - 文件放在 `include/dispatch_replay_io.h` / `src/dispatch_replay_io.cpp`，没有塞进 `DispatchReplaySimulator`。
+
+3. 候选边生成器解耦
+   - 当前 `generate_candidate_edges` 是 header-only 函数，适合第一版。
+   - 后续如果加入 tile bucket、等待时间项、真实 ETA 或更复杂统计，可以拆成 `CandidateEdgeGenerator`。
+   - 现在可以先不拆，等 CSV 数据进来后看实际瓶颈和配置复杂度。
+
+4. 成本模型解耦
+   - 当前 cost 是欧氏距离乘系数。
+   - 等待时间项、未服务惩罚和真实 ETA 不应该直接堆进 MCMF 算法。
+   - 建议后续抽出 `PickupCostModel` 或先做纯函数式 cost builder。
+
+结论：
+
+- 现在可以做第二轮解耦的设计讨论。
+- `TaxiSystem` 日志开关和 replay CSV loader 已落地。
+- 暂时不要重构 `TaxiSystem` 主状态机，也不要提前服务化。
 
 ## 当前任务收束
 
@@ -194,6 +253,9 @@ Go 预处理边界：
 - 批量贪心 baseline。
 - `Assignment` 到 `TaxiSystem` 状态的统一回写入口。
 - MCMF 批量匹配第一版。
+- replay 总指标和每轮 batch 日志。
+- 候选边生成统计。
+- 候选边规范化。
 
 本轮 demo 验证：
 
@@ -202,10 +264,10 @@ Go 预处理边界：
 
 下一步建议：
 
-1. 写一个小型 batch 回写循环，输入 `std::vector<Assignment>` 和 request 容器，逐条调用 `TaxiSystem::apply_assignment`。
-2. 对同一批候选边同时跑 greedy 和 MCMF，输出匹配数量和总 cost。
-3. 给回放器增加更完整的日志输出，方便展示每一轮 batch 发生了什么。
-4. 最后补匹配率、平均接驾 cost、未服务请求数这几个基础指标的命令行展示。
+1. 扩展 Go 预处理工具输出 `drivers.csv`。
+2. 增加一个小型 replay CLI，读取 `data/normalized/requests.csv` / `drivers.csv` 并输出 report。
+3. 用小规模 CSV 样本跑通 `CSV -> replay -> report`。
+4. 再根据样本报告决定是否抽 `CandidateEdgeGenerator` 和成本模型。
 
 ## 低优先级探索：Go + C++ 跨语言方案
 

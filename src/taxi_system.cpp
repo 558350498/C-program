@@ -8,14 +8,6 @@
 
 namespace {
 
-void log_error(const char *operation, const std::string &message) {
-  std::cerr << '[' << operation << "] " << message << '\n';
-}
-
-void log_info(const char *operation, const std::string &message) {
-  std::clog << '[' << operation << "] " << message << '\n';
-}
-
 std::string taxi_status_message(int id, TaxiStatus status) {
   std::ostringstream stream;
   stream << "taxi_id=" << id << " status=" << to_string(status);
@@ -25,9 +17,11 @@ std::string taxi_status_message(int id, TaxiStatus status) {
 } // namespace
 
 TaxiSystem::TaxiSystem(std::unique_ptr<ISpatialIndex> spatial_index,
-                       std::unique_ptr<IDispatchStrategy> dispatch_strategy)
+                       std::unique_ptr<IDispatchStrategy> dispatch_strategy,
+                       bool logging_enabled)
     : spatial_index_(std::move(spatial_index)),
-      dispatch_strategy_(std::move(dispatch_strategy)), next_taxi_id_(0) {
+      dispatch_strategy_(std::move(dispatch_strategy)), next_taxi_id_(0),
+      logging_enabled_(logging_enabled) {
   if (!spatial_index_) {
     spatial_index_ = std::make_unique<KdTreeSpatialIndex>();
   }
@@ -37,6 +31,12 @@ TaxiSystem::TaxiSystem(std::unique_ptr<ISpatialIndex> spatial_index,
 }
 
 TaxiSystem::~TaxiSystem() = default;
+
+void TaxiSystem::set_logging_enabled(bool enabled) {
+  logging_enabled_ = enabled;
+}
+
+bool TaxiSystem::logging_enabled() const { return logging_enabled_; }
 
 int TaxiSystem::create_taxi() {
   const int id = next_taxi_id_;
@@ -417,6 +417,20 @@ Taxi *TaxiSystem::find_taxi(int id) {
     return nullptr;
   }
   return &it->second;
+}
+
+void TaxiSystem::log_error(const char *operation,
+                           const std::string &message) const {
+  if (logging_enabled_) {
+    std::cerr << '[' << operation << "] " << message << '\n';
+  }
+}
+
+void TaxiSystem::log_info(const char *operation,
+                          const std::string &message) const {
+  if (logging_enabled_) {
+    std::clog << '[' << operation << "] " << message << '\n';
+  }
 }
 
 std::vector<Point> TaxiSystem::collect_free_taxi_points() const {

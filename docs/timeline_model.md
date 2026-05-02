@@ -98,6 +98,16 @@ pending
 
 第一版可以先只使用 MCMF 结果作为正式回写，greedy 结果只用于指标对比。
 
+当前实现里，回放器使用 `generate_candidate_edges_with_stats` 生成候选边和统计数据。每轮 batch 会记录：
+
+- 可用司机数
+- pending request 数
+- 候选边数量
+- 有候选边 / 无候选边的 request 数
+- greedy 匹配数量和总 cost
+- MCMF 匹配数量和总 cost
+- 实际成功回写的 assignment 数量和接驾 cost
+
 ## 5. 同一时间点事件顺序
 
 如果多个事件发生在同一秒，建议按以下顺序处理：
@@ -169,35 +179,55 @@ pending
 6. 按 `pickup_cost` 生成 `pickup_arrival` 事件。
 7. 按固定 `trip_duration_seconds` 生成 `trip_complete` 事件。
 8. 订单完成时把 taxi 位置更新到 `dropoff_location`，再释放为 `free`。
+9. 通过 `run_report` 返回 `DispatchReplayReport`，包含总指标和每轮 batch 日志。
+10. 通过 `format_dispatch_replay_report` 输出可展示的回放摘要。
 
 当前测试覆盖：
 
 - request arrival -> batch matching -> apply assignment -> start trip -> complete trip。
 - 第一单完成后，taxi 虚空移动到终点，并继续接第二单。
 - 无候选边时 request 保持未服务。
+- 每轮 batch 日志、候选边统计、greedy/MCMF 对比指标和平均接驾 cost。
 
-## 9. 下一步实现建议
+## 9. 当前输出指标
 
-后续可以继续增强回放模块：
+当前回放器已经输出：
 
-- 输入：
-  - 初始司机快照
-  - 请求列表
-  - `batch_interval_seconds`
-  - `trip_duration_seconds`
-- 内部状态：
-  - pending requests
-  - active requests
-  - event queue
-- 输出指标：
-  - 总请求数
-  - 完成请求数
-  - 未服务请求数
-  - 平均接驾 cost
-  - greedy 和 MCMF 的匹配数量 / 总 cost 对比
+- 总请求数
+- 已派单请求数
+- 完成请求数
+- 未服务请求数
+- 派单率
+- 完成率
+- 总 batch 数
+- 候选边总数
+- 有候选边 / 无候选边的 request 累计数
+- greedy 和 MCMF 的匹配数量 / 总 cost 对比
+- 实际回写的接驾总 cost 和平均 cost
 
-第一版回放器只需要证明流程闭环：
+第一版回放器已经证明流程闭环：
 
 ```text
 request arrival -> batch matching -> apply assignment -> start trip -> complete trip
 ```
+
+## 10. 下一步实现建议
+
+后续可以继续增强回放模块：
+
+- `TaxiSystem` 已支持日志开关，replay 默认关闭系统状态日志，避免污染 summary。
+- 已增加标准化 `drivers.csv` / `requests.csv` 读取入口。
+- 允许从标准化输入读取真实或近似的 `trip_duration_seconds`。
+- 为 CSV 接入后的数据质量检查保留 batch 明细输出。
+
+标准化 CSV 读取代码：
+
+- `include/dispatch_replay_io.h`
+- `src/dispatch_replay_io.cpp`
+- `tests/dispatch_replay_io_test.cpp`
+
+当前读取边界：
+
+- C++ 只读取项目内部标准化字段。
+- CSV loader 不解析 Kaggle 原始字段。
+- 坏行会被记录到 `errors`，好行仍然保留。

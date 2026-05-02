@@ -1,9 +1,11 @@
 #include "dispatch_replay.h"
 
 #include <algorithm>
+#include <iomanip>
 #include <memory>
 #include <optional>
 #include <queue>
+#include <sstream>
 #include <unordered_map>
 
 namespace {
@@ -87,15 +89,23 @@ DispatchReplayMetrics DispatchReplaySimulator::run(
     const std::vector<DriverSnapshot> &initial_drivers,
     const std::vector<PassengerRequest> &requests,
     const DispatchReplayOptions &options) const {
-  DispatchReplayMetrics metrics;
+  return run_report(initial_drivers, requests, options).metrics;
+}
+
+DispatchReplayReport DispatchReplaySimulator::run_report(
+    const std::vector<DriverSnapshot> &initial_drivers,
+    const std::vector<PassengerRequest> &requests,
+    const DispatchReplayOptions &options) const {
+  DispatchReplayReport report;
+  DispatchReplayMetrics &metrics = report.metrics;
   metrics.total_requests = requests.size();
 
   if (options.batch_interval_seconds <= 0 || options.end_time < options.start_time) {
     metrics.unserved_requests = metrics.total_requests;
-    return metrics;
+    return report;
   }
 
-  TaxiSystem system;
+  TaxiSystem system(nullptr, nullptr, options.taxi_system_logging_enabled);
   std::unordered_map<int, DriverSnapshot> drivers;
   for (const auto &driver : initial_drivers) {
     if (driver.taxi_id < 0) {
@@ -158,22 +168,46 @@ DispatchReplayMetrics DispatchReplaySimulator::run(
       const auto available_drivers = collect_available_drivers(drivers, event.time);
       const auto pending_requests =
           collect_pending_requests(requests, request_contexts, event.time);
+
+      DispatchReplayBatchLog batch_log;
+      batch_log.batch_time = event.time;
+      batch_log.available_drivers = available_drivers.size();
+      batch_log.pending_requests = pending_requests.size();
+
       if (available_drivers.empty() || pending_requests.empty()) {
         ++metrics.batch_runs;
+        report.batch_logs.push_back(batch_log);
         continue;
       }
 
       BatchDispatchInput batch(event.time, available_drivers, pending_requests);
-      const auto candidate_edges =
-          generate_candidate_edges(batch, options.candidate_options);
+      const auto candidate_result =
+          generate_candidate_edges_with_stats(batch, options.candidate_options);
+      const auto &candidate_edges = candidate_result.edges;
       const auto greedy_assignments = greedy_batch_assign(candidate_edges);
       const auto mcmf_assignments = mcmf_strategy_.assign(candidate_edges);
+      const int greedy_cost = sum_pickup_cost(greedy_assignments);
+      const int mcmf_cost = sum_pickup_cost(mcmf_assignments);
 
       ++metrics.batch_runs;
+      metrics.candidate_edges_total += candidate_result.stats.candidate_edges;
+      metrics.requests_with_candidate_edges_total +=
+          candidate_result.stats.requests_with_edges;
+      metrics.requests_without_candidate_edges_total +=
+          candidate_result.stats.requests_without_edges;
       metrics.greedy_assigned_total += greedy_assignments.size();
       metrics.mcmf_assigned_total += mcmf_assignments.size();
-      metrics.greedy_cost_total += sum_pickup_cost(greedy_assignments);
-      metrics.mcmf_cost_total += sum_pickup_cost(mcmf_assignments);
+      metrics.greedy_cost_total += greedy_cost;
+      metrics.mcmf_cost_total += mcmf_cost;
+
+      batch_log.candidate_edges = candidate_result.stats.candidate_edges;
+      batch_log.requests_with_edges = candidate_result.stats.requests_with_edges;
+      batch_log.requests_without_edges =
+          candidate_result.stats.requests_without_edges;
+      batch_log.greedy_assigned = greedy_assignments.size();
+      batch_log.mcmf_assigned = mcmf_assignments.size();
+      batch_log.greedy_cost = greedy_cost;
+      batch_log.mcmf_cost = mcmf_cost;
 
       for (const auto &assignment : mcmf_assignments) {
         const auto context_it = request_contexts.find(assignment.request_id);
@@ -194,6 +228,8 @@ DispatchReplayMetrics DispatchReplaySimulator::run(
             event.time + assignment.pickup_cost + options.trip_duration_seconds;
         ++metrics.assigned_requests;
         metrics.applied_pickup_cost_total += assignment.pickup_cost;
+        ++batch_log.applied_assignments;
+        batch_log.applied_pickup_cost += assignment.pickup_cost;
 
         events.push(ReplayEvent{event.time + assignment.pickup_cost,
                                 ReplayEventType::pickup_arrival,
@@ -203,6 +239,7 @@ DispatchReplayMetrics DispatchReplaySimulator::run(
                                 ReplayEventType::trip_complete,
                                 assignment.request_id});
       }
+      report.batch_logs.push_back(batch_log);
       continue;
     }
 
@@ -247,5 +284,75 @@ DispatchReplayMetrics DispatchReplaySimulator::run(
     }
   }
 
-  return metrics;
+  return report;
+}
+
+double completion_rate(const DispatchReplayMetrics &metrics) {
+  if (metrics.total_requests == 0) {
+    return 0.0;
+  }
+  return static_cast<double>(metrics.completed_requests) /
+         static_cast<double>(metrics.total_requests);
+}
+
+double assignment_rate(const DispatchReplayMetrics &metrics) {
+  if (metrics.total_requests == 0) {
+    return 0.0;
+  }
+  return static_cast<double>(metrics.assigned_requests) /
+         static_cast<double>(metrics.total_requests);
+}
+
+double average_applied_pickup_cost(const DispatchReplayMetrics &metrics) {
+  if (metrics.assigned_requests == 0) {
+    return 0.0;
+  }
+  return static_cast<double>(metrics.applied_pickup_cost_total) /
+         static_cast<double>(metrics.assigned_requests);
+}
+
+std::string format_dispatch_replay_report(const DispatchReplayReport &report,
+                                          bool include_batch_logs) {
+  const DispatchReplayMetrics &metrics = report.metrics;
+  std::ostringstream stream;
+  stream << "Dispatch replay summary\n";
+  stream << "requests total=" << metrics.total_requests
+         << " assigned=" << metrics.assigned_requests
+         << " completed=" << metrics.completed_requests
+         << " unserved=" << metrics.unserved_requests << '\n';
+  stream << std::fixed << std::setprecision(2);
+  stream << "rates assignment=" << assignment_rate(metrics) * 100.0
+         << "% completion=" << completion_rate(metrics) * 100.0 << "%\n";
+  stream << "batches runs=" << metrics.batch_runs
+         << " candidate_edges=" << metrics.candidate_edges_total
+         << " requests_with_edges="
+         << metrics.requests_with_candidate_edges_total
+         << " requests_without_edges="
+         << metrics.requests_without_candidate_edges_total << '\n';
+  stream << "strategy greedy_assigned=" << metrics.greedy_assigned_total
+         << " greedy_cost=" << metrics.greedy_cost_total
+         << " mcmf_assigned=" << metrics.mcmf_assigned_total
+         << " mcmf_cost=" << metrics.mcmf_cost_total << '\n';
+  stream << "applied pickup_cost_total=" << metrics.applied_pickup_cost_total
+         << " pickup_cost_avg=" << average_applied_pickup_cost(metrics)
+         << '\n';
+
+  if (!include_batch_logs || report.batch_logs.empty()) {
+    return stream.str();
+  }
+
+  stream << "Batch logs\n";
+  for (const auto &log : report.batch_logs) {
+    stream << "t=" << log.batch_time << " drivers=" << log.available_drivers
+           << " pending=" << log.pending_requests
+           << " edges=" << log.candidate_edges
+           << " req_with_edges=" << log.requests_with_edges
+           << " req_without_edges=" << log.requests_without_edges
+           << " greedy=" << log.greedy_assigned << '/' << log.greedy_cost
+           << " mcmf=" << log.mcmf_assigned << '/' << log.mcmf_cost
+           << " applied=" << log.applied_assignments << '/'
+           << log.applied_pickup_cost << '\n';
+  }
+
+  return stream.str();
 }

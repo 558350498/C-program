@@ -54,6 +54,16 @@ int main() {
   REQUIRE(has_assignment(min_cost_result, 2, 201, 2));
   REQUIRE(has_assignment(min_cost_result, 1, 202, 1));
 
+  std::vector<CandidateEdge> duplicate_edges;
+  duplicate_edges.emplace_back(1, 203, 30);
+  duplicate_edges.emplace_back(1, 203, 3);
+  duplicate_edges.emplace_back(2, 204, 4);
+
+  const auto duplicate_result = strategy.assign(duplicate_edges);
+  REQUIRE(duplicate_result.size() == 2);
+  REQUIRE(has_assignment(duplicate_result, 1, 203, 3));
+  REQUIRE(has_assignment(duplicate_result, 2, 204, 4));
+
   std::vector<CandidateEdge> invalid_edges;
   invalid_edges.emplace_back(-1, 301, 1);
   invalid_edges.emplace_back(1, -1, 1);

@@ -139,8 +139,10 @@ std::unordered_map<int, int> build_index(const std::vector<int> &ids) {
 
 std::vector<Assignment> McmfBatchStrategy::assign(
     const std::vector<CandidateEdge> &candidate_edges) const {
-  const std::vector<int> taxi_ids = sorted_unique_taxis(candidate_edges);
-  const std::vector<int> request_ids = sorted_unique_requests(candidate_edges);
+  const std::vector<CandidateEdge> normalized_edges =
+      normalize_candidate_edges(candidate_edges);
+  const std::vector<int> taxi_ids = sorted_unique_taxis(normalized_edges);
+  const std::vector<int> request_ids = sorted_unique_requests(normalized_edges);
   if (taxi_ids.empty() || request_ids.empty()) {
     return {};
   }
@@ -161,7 +163,7 @@ std::vector<Assignment> McmfBatchStrategy::assign(
     flow.add_edge(source, taxi_offset + taxi_index, 1, 0);
   }
 
-  for (const auto &edge : candidate_edges) {
+  for (const auto &edge : normalized_edges) {
     if (edge.taxi_id < 0 || edge.request_id < 0 || edge.pickup_cost < 0) {
       continue;
     }

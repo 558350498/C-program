@@ -22,6 +22,8 @@
 
 核心入口：
 
+- `set_logging_enabled`
+- `logging_enabled`
 - `create_taxi`
 - `register_taxi`
 - `set_taxi_online`
@@ -45,6 +47,7 @@
 - `occupy` taxi 不能通过 `update_taxi_status(..., free)` 绕过 request 生命周期释放。
 - 释放占用车辆应该走 `complete_trip` 或 `cancel_request`。
 - 批量匹配结果不能在策略层直接改状态，应该统一交给 `apply_assignment` 回写。
+- replay / CSV 批量场景可以关闭 `TaxiSystem` 日志，避免状态日志污染指标输出。
 
 ---
 
@@ -72,6 +75,8 @@
 - `DriverSnapshot`
 - `Assignment`
 - `CandidateEdge`
+- `CandidateEdgeStats`
+- `CandidateEdgeGenerationResult`
 - `CandidateEdgeOptions`
 - `BatchDispatchInput`
 
@@ -80,6 +85,8 @@
 - `is_available_for_batch`
 - `is_request_ready_for_batch`
 - `estimate_pickup_cost`
+- `normalize_candidate_edges`
+- `generate_candidate_edges_with_stats`
 - `generate_candidate_edges`
 - `greedy_batch_assign`
 
@@ -91,9 +98,11 @@
 当前状态流：
 
 1. batch 模块只接收快照数据。
-2. `generate_candidate_edges` 生成 `taxi_id -> request_id` 候选边和 `pickup_cost`。
-3. `greedy_batch_assign` 产出 `Assignment` 列表。
-4. 状态回写由 `TaxiSystem::apply_assignment` 逐条提交。
+2. `generate_candidate_edges_with_stats` 生成 `taxi_id -> request_id` 候选边、`pickup_cost` 和候选边统计。
+3. `normalize_candidate_edges` 过滤非法候选边，并对同一 `taxi_id/request_id` 保留最低 cost。
+4. `generate_candidate_edges` 保持原便捷入口，只返回候选边列表。
+5. `greedy_batch_assign` 产出 `Assignment` 列表。
+6. 状态回写由 `TaxiSystem::apply_assignment` 逐条提交。
 
 ---
 
@@ -113,6 +122,7 @@
 - 第一版 `trip_duration_seconds = 600`。
 - 第一版采用“虚空行走”：不模拟真实道路，订单完成时 taxi 直接出现在终点。
 - 未匹配 request 留到下一轮继续参与匹配。
+- replay 会记录总指标和每轮 batch 日志，用于展示和后续 CSV 数据质量排查。
 
 文档位置：
 
@@ -123,6 +133,15 @@
 - `include/dispatch_replay.h`
 - `src/dispatch_replay.cpp`
 - `tests/dispatch_replay_test.cpp`
+
+核心入口：
+
+- `DispatchReplaySimulator::run`
+- `DispatchReplaySimulator::run_report`
+- `format_dispatch_replay_report`
+- `assignment_rate`
+- `completion_rate`
+- `average_applied_pickup_cost`
 
 ---
 
@@ -151,6 +170,33 @@
 - Go 负责数据预处理。
 - C++ 负责调度核心、状态机、MCMF 和事件回放。
 - 两边第一版通过文件交互。
+
+### Replay CSV IO
+
+负责什么：
+
+1. 读取标准化 `requests.csv`。
+2. 读取标准化 `drivers.csv`。
+3. 把文件数据转换成 `PassengerRequest` 和 `DriverSnapshot`。
+4. 记录行级解析错误，跳过坏行，保留可用行。
+
+不负责什么：
+
+1. 不解析 Kaggle 原始字段。
+2. 不做坐标清洗和 tile 映射。
+3. 不运行调度仿真。
+4. 不修改 `TaxiSystem` 状态。
+
+核心入口：
+
+- `load_passenger_requests_csv`
+- `load_driver_snapshots_csv`
+
+代码位置：
+
+- `include/dispatch_replay_io.h`
+- `src/dispatch_replay_io.cpp`
+- `tests/dispatch_replay_io_test.cpp`
 
 ---
 
@@ -186,6 +232,7 @@
 2. taxi 通过 `CandidateEdge` 连接 request，容量为 1，费用为 `pickup_cost`。
 3. request 连接汇点，容量为 1。
 4. 使用最小费用最大流求解，先保证匹配数量最大，再最小化总代价。
+5. 进入 MCMF 前会先规范化候选边，避免非法边和重复边污染流图。
 
 当前验证入口：
 
@@ -329,8 +376,9 @@
 2. 进入对应模块看核心入口。
 3. 状态变化优先看 `TaxiSystem` 和 `RequestContext`。
 4. 批量匹配输入和候选边优先看 `dispatch_batch.h`。
-5. 算法策略优先看 `IDispatchStrategy`。
-6. 空间查询优先看 `ISpatialIndex`。
+5. 离线回放指标和 batch 日志优先看 `dispatch_replay.h`。
+6. 算法策略优先看 `IDispatchStrategy` / `McmfBatchStrategy`。
+7. 空间查询优先看 `ISpatialIndex`。
 
 ## 当前设计原则
 

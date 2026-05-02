@@ -11,6 +11,7 @@ add_library(
   taxi_core
   src/taxi_domain.cpp
   src/dispatch_replay.cpp
+  src/dispatch_replay_io.cpp
   src/kd_tree_spatial_index.cpp
   src/dispatch_strategy.cpp
   src/mcmf_batch_strategy.cpp
@@ -44,6 +45,9 @@ if(BUILD_TESTING)
   add_executable(dispatch_replay_test tests/dispatch_replay_test.cpp)
   target_link_libraries(dispatch_replay_test PRIVATE taxi_core)
 
+  add_executable(dispatch_replay_io_test tests/dispatch_replay_io_test.cpp)
+  target_link_libraries(dispatch_replay_io_test PRIVATE taxi_core)
+
   add_executable(taxi_system_test tests/taxi_system_test.cpp)
   target_link_libraries(taxi_system_test PRIVATE taxi_core)
 
@@ -53,6 +57,7 @@ if(BUILD_TESTING)
   add_test(NAME dispatch_batch_test COMMAND dispatch_batch_test)
   add_test(NAME mcmf_batch_strategy_test COMMAND mcmf_batch_strategy_test)
   add_test(NAME dispatch_replay_test COMMAND dispatch_replay_test)
+  add_test(NAME dispatch_replay_io_test COMMAND dispatch_replay_io_test)
   add_test(NAME taxi_system_test COMMAND taxi_system_test)
   add_test(NAME taxi_demo_smoke COMMAND taxi_demo)
 
@@ -67,6 +72,8 @@ if(BUILD_TESTING)
                                                        "smoke;batch;mcmf")
   set_tests_properties(dispatch_replay_test PROPERTIES LABELS
                                                        "smoke;replay")
+  set_tests_properties(dispatch_replay_io_test PROPERTIES LABELS
+                                                       "smoke;replay;csv")
   set_tests_properties(taxi_system_test PROPERTIES LABELS "smoke;taxi-system")
   set_tests_properties(taxi_demo_smoke PROPERTIES LABELS "smoke;demo")
 
@@ -78,10 +85,11 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:dispatch_batch_test>
     COMMAND $<TARGET_FILE:mcmf_batch_strategy_test>
     COMMAND $<TARGET_FILE:dispatch_replay_test>
+    COMMAND $<TARGET_FILE:dispatch_replay_io_test>
     COMMAND $<TARGET_FILE:taxi_system_test>
     COMMAND $<TARGET_FILE:taxi_demo>
     DEPENDS kd_tree_spatial_index_test requestcontext_test dispatch_strategy_test
             dispatch_batch_test mcmf_batch_strategy_test dispatch_replay_test
-            taxi_system_test taxi_demo
+            dispatch_replay_io_test taxi_system_test taxi_demo
     USES_TERMINAL)
 endif()

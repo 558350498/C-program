@@ -98,6 +98,16 @@ int main() {
   assert(candidate_edges[1].request_id == 102);
   assert(candidate_edges[1].pickup_cost == 8);
 
+  const auto candidate_result = generate_candidate_edges_with_stats(
+      matching_batch, CandidateEdgeOptions(2.0, 10.0));
+  assert(candidate_result.stats.total_drivers == 4);
+  assert(candidate_result.stats.total_requests == 4);
+  assert(candidate_result.stats.available_drivers == 2);
+  assert(candidate_result.stats.ready_requests == 3);
+  assert(candidate_result.stats.candidate_edges == 2);
+  assert(candidate_result.stats.requests_with_edges == 2);
+  assert(candidate_result.stats.requests_without_edges == 1);
+
   assert(generate_candidate_edges(matching_batch, -1.0).empty());
   assert(generate_candidate_edges(matching_batch, 2.0, 0.0).empty());
 
@@ -126,6 +136,23 @@ int main() {
   assert(same_tile_edges.size() == 2);
   assert(same_tile_edges[0].taxi_id == 2);
   assert(same_tile_edges[1].taxi_id == 1);
+
+  std::vector<CandidateEdge> duplicate_edges;
+  duplicate_edges.emplace_back(1, 201, 20);
+  duplicate_edges.emplace_back(1, 201, 10);
+  duplicate_edges.emplace_back(2, 201, 15);
+  duplicate_edges.emplace_back(-1, 201, 1);
+  duplicate_edges.emplace_back(1, -1, 1);
+  duplicate_edges.emplace_back(1, 201, -1);
+
+  const auto normalized_edges = normalize_candidate_edges(duplicate_edges);
+  assert(normalized_edges.size() == 2);
+  assert(normalized_edges[0].taxi_id == 1);
+  assert(normalized_edges[0].request_id == 201);
+  assert(normalized_edges[0].pickup_cost == 10);
+  assert(normalized_edges[1].taxi_id == 2);
+  assert(normalized_edges[1].request_id == 201);
+  assert(normalized_edges[1].pickup_cost == 15);
 
   std::vector<CandidateEdge> greedy_edges;
   greedy_edges.emplace_back(1, 101, 50);

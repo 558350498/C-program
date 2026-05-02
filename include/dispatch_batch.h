@@ -103,6 +103,26 @@ struct CandidateEdge {
         pickup_cost(pickup_cost_value) {}
 };
 
+struct CandidateEdgeStats {
+  std::size_t total_drivers;
+  std::size_t total_requests;
+  std::size_t available_drivers;
+  std::size_t ready_requests;
+  std::size_t candidate_edges;
+  std::size_t requests_with_edges;
+  std::size_t requests_without_edges;
+
+  CandidateEdgeStats()
+      : total_drivers(0), total_requests(0), available_drivers(0),
+        ready_requests(0), candidate_edges(0), requests_with_edges(0),
+        requests_without_edges(0) {}
+};
+
+struct CandidateEdgeGenerationResult {
+  std::vector<CandidateEdge> edges;
+  CandidateEdgeStats stats;
+};
+
 struct CandidateEdgeOptions {
   double radius;
   double seconds_per_distance_unit;
@@ -177,11 +197,54 @@ inline int estimate_pickup_cost(const Point &driver_location,
 }
 
 inline std::vector<CandidateEdge>
-generate_candidate_edges(const BatchDispatchInput &batch,
-                         const CandidateEdgeOptions &options) {
-  std::vector<CandidateEdge> edges;
+normalize_candidate_edges(std::vector<CandidateEdge> edges) {
+  edges.erase(std::remove_if(edges.begin(), edges.end(),
+                             [](const CandidateEdge &edge) {
+                               return edge.taxi_id < 0 ||
+                                      edge.request_id < 0 ||
+                                      edge.pickup_cost < 0;
+                             }),
+              edges.end());
+
+  std::sort(edges.begin(), edges.end(),
+            [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+              if (lhs.taxi_id != rhs.taxi_id) {
+                return lhs.taxi_id < rhs.taxi_id;
+              }
+              if (lhs.request_id != rhs.request_id) {
+                return lhs.request_id < rhs.request_id;
+              }
+              return lhs.pickup_cost < rhs.pickup_cost;
+            });
+
+  std::vector<CandidateEdge> normalized;
+  normalized.reserve(edges.size());
+  for (const auto &edge : edges) {
+    if (!normalized.empty() &&
+        normalized.back().taxi_id == edge.taxi_id &&
+        normalized.back().request_id == edge.request_id) {
+      continue;
+    }
+    normalized.push_back(edge);
+  }
+
+  return normalized;
+}
+
+inline CandidateEdgeGenerationResult generate_candidate_edges_with_stats(
+    const BatchDispatchInput &batch, const CandidateEdgeOptions &options) {
+  CandidateEdgeGenerationResult result;
+  result.stats.total_drivers = batch.drivers.size();
+  result.stats.total_requests = batch.requests.size();
+
+  for (const auto &driver : batch.drivers) {
+    if (is_available_for_batch(driver, batch.batch_time)) {
+      ++result.stats.available_drivers;
+    }
+  }
+
   if (options.radius < 0.0 || options.seconds_per_distance_unit <= 0.0) {
-    return edges;
+    return result;
   }
 
   const double radius_sq = options.radius * options.radius;
@@ -189,6 +252,7 @@ generate_candidate_edges(const BatchDispatchInput &batch,
     if (!is_request_ready_for_batch(request, batch.batch_time)) {
       continue;
     }
+    ++result.stats.ready_requests;
 
     std::vector<CandidateEdge> request_edges;
     for (const auto &driver : batch.drivers) {
@@ -213,6 +277,8 @@ generate_candidate_edges(const BatchDispatchInput &batch,
       request_edges.emplace_back(driver.taxi_id, request.request_id, cost);
     }
 
+    request_edges = normalize_candidate_edges(std::move(request_edges));
+
     std::sort(request_edges.begin(), request_edges.end(),
               [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
                 if (lhs.pickup_cost != rhs.pickup_cost) {
@@ -226,10 +292,24 @@ generate_candidate_edges(const BatchDispatchInput &batch,
       request_edges.resize(options.max_edges_per_request);
     }
 
-    edges.insert(edges.end(), request_edges.begin(), request_edges.end());
+    if (request_edges.empty()) {
+      ++result.stats.requests_without_edges;
+    } else {
+      ++result.stats.requests_with_edges;
+    }
+
+    result.edges.insert(result.edges.end(), request_edges.begin(),
+                        request_edges.end());
   }
 
-  return edges;
+  result.stats.candidate_edges = result.edges.size();
+  return result;
+}
+
+inline std::vector<CandidateEdge>
+generate_candidate_edges(const BatchDispatchInput &batch,
+                         const CandidateEdgeOptions &options) {
+  return generate_candidate_edges_with_stats(batch, options).edges;
 }
 
 inline std::vector<CandidateEdge>
@@ -241,6 +321,7 @@ generate_candidate_edges(const BatchDispatchInput &batch, double radius,
 
 inline std::vector<Assignment>
 greedy_batch_assign(std::vector<CandidateEdge> edges) {
+  edges = normalize_candidate_edges(std::move(edges));
   std::sort(edges.begin(), edges.end(),
             [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
               if (lhs.pickup_cost != rhs.pickup_cost) {
