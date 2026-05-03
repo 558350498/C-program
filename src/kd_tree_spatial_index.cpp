@@ -218,6 +218,14 @@ void range_search_rec(const KdNode *node, const Point &center, double radius_sq,
   range_search_rec(node->right.get(), center, radius_sq, result);
 }
 
+bool less_query_result(const SpatialQueryResult &lhs,
+                       const SpatialQueryResult &rhs) {
+  if (lhs.distance_sq != rhs.distance_sq) {
+    return lhs.distance_sq < rhs.distance_sq;
+  }
+  return lhs.id < rhs.id;
+}
+
 } // namespace
 
 class KdTreeSpatialIndex::Impl {
@@ -274,6 +282,37 @@ public:
 
     std::vector<Point> result;
     range_search_rec(root.get(), center, radius * radius, result);
+    return result;
+  }
+
+  std::vector<SpatialQueryResult> radius_query(const Point &center,
+                                               double radius) const {
+    std::vector<SpatialQueryResult> result;
+    const std::vector<Point> points = radius_search(center, radius);
+    result.reserve(points.size());
+    for (const auto &point : points) {
+      result.emplace_back(point.id, dist_sq(point, center));
+    }
+    std::sort(result.begin(), result.end(), less_query_result);
+    return result;
+  }
+
+  std::vector<SpatialQueryResult> nearest_k(const Point &center,
+                                            std::size_t k) const {
+    if (k == 0 || points_by_id.empty()) {
+      return {};
+    }
+
+    std::vector<SpatialQueryResult> result;
+    result.reserve(points_by_id.size());
+    for (const auto &[id, point] : points_by_id) {
+      result.emplace_back(id, dist_sq(point, center));
+    }
+
+    std::sort(result.begin(), result.end(), less_query_result);
+    if (result.size() > k) {
+      result.resize(k);
+    }
     return result;
   }
 
@@ -334,6 +373,19 @@ std::vector<Point> KdTreeSpatialIndex::radius_search(const Point &center,
     return {};
   }
   return impl_->radius_search(center, radius);
+}
+
+std::vector<SpatialQueryResult>
+KdTreeSpatialIndex::radius_query(const Point &center, double radius) const {
+  if (radius < 0.0) {
+    return {};
+  }
+  return impl_->radius_query(center, radius);
+}
+
+std::vector<SpatialQueryResult>
+KdTreeSpatialIndex::nearest_k(const Point &center, std::size_t k) const {
+  return impl_->nearest_k(center, k);
 }
 
 void KdTreeSpatialIndex::rebuild(const std::vector<Point> &points) {

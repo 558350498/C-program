@@ -23,6 +23,7 @@ type options struct {
 	driversOutput string
 	limit         int
 	baseTime      string
+	windowSeconds int64
 	driverEvery   int
 	driverRadius  float64
 	seed          int64
@@ -35,6 +36,7 @@ func main() {
 	flag.StringVar(&opts.driversOutput, "drivers-output", "drivers.csv", "output synthesized drivers CSV")
 	flag.IntVar(&opts.limit, "limit", 1000, "maximum valid rows to write; <=0 means no limit")
 	flag.StringVar(&opts.baseTime, "base-time", "", "optional base time in RFC3339 or taxi timestamp format")
+	flag.Int64Var(&opts.windowSeconds, "window-seconds", 0, "optional continuous pickup-time window to sample before applying -limit; <=0 disables windowing")
 	flag.IntVar(&opts.driverEvery, "driver-every", 2, "synthesize one driver for every N valid requests; 2 means about 0.5 driver per request")
 	flag.Float64Var(&opts.driverRadius, "driver-radius", 0.003, "random driver offset radius around pickup point in lon/lat degrees")
 	flag.Int64Var(&opts.seed, "seed", 20260503, "random seed for synthesized drivers")
@@ -48,6 +50,9 @@ func main() {
 	}
 	if opts.driverRadius < 0 {
 		fatalf("-driver-radius must be non-negative")
+	}
+	if opts.windowSeconds < 0 {
+		fatalf("-window-seconds must be non-negative")
 	}
 
 	if err := convertRequestsAndDrivers(opts); err != nil {
@@ -138,8 +143,19 @@ func convertRequestsAndDrivers(opts options) error {
 		}
 
 		requests = append(requests, request)
-		if opts.limit > 0 && len(requests) >= opts.limit {
+		if opts.windowSeconds <= 0 && opts.limit > 0 && len(requests) >= opts.limit {
 			break
+		}
+	}
+
+	if opts.windowSeconds > 0 {
+		var err error
+		requests, base, err = selectWindow(requests, base, opts.windowSeconds)
+		if err != nil {
+			return err
+		}
+		if opts.limit > 0 && len(requests) > opts.limit {
+			requests = requests[:opts.limit]
 		}
 	}
 
@@ -200,7 +216,46 @@ func convertRequestsAndDrivers(opts options) error {
 
 	fmt.Printf("wrote %d normalized requests to %s\n", written, opts.outputPath)
 	fmt.Printf("wrote %d synthesized drivers to %s\n", driversWritten, opts.driversOutput)
+	if opts.windowSeconds > 0 {
+		fmt.Printf("used pickup-time window starting at %s for %d seconds\n", base.Format("2006-01-02 15:04:05"), opts.windowSeconds)
+	}
 	return nil
+}
+
+func selectWindow(requests []normalizedRequest, base *time.Time, windowSeconds int64) ([]normalizedRequest, *time.Time, error) {
+	if len(requests) == 0 {
+		return requests, base, nil
+	}
+
+	sort.Slice(requests, func(i, j int) bool {
+		if !requests[i].pickupTime.Equal(requests[j].pickupTime) {
+			return requests[i].pickupTime.Before(requests[j].pickupTime)
+		}
+		return requests[i].requestID < requests[j].requestID
+	})
+
+	windowStart := requests[0].pickupTime
+	if base != nil {
+		windowStart = *base
+	}
+	windowEnd := windowStart.Add(time.Duration(windowSeconds) * time.Second)
+
+	selected := make([]normalizedRequest, 0)
+	for _, request := range requests {
+		if request.pickupTime.Before(windowStart) {
+			continue
+		}
+		if !request.pickupTime.Before(windowEnd) {
+			break
+		}
+		selected = append(selected, request)
+	}
+
+	if len(selected) == 0 {
+		return nil, &windowStart, fmt.Errorf("no valid requests in pickup-time window starting at %s for %d seconds", windowStart.Format("2006-01-02 15:04:05"), windowSeconds)
+	}
+
+	return selected, &windowStart, nil
 }
 
 type normalizedRequest struct {

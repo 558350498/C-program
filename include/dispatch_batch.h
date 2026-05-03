@@ -1,11 +1,13 @@
 #pragma once
 
+#include "kd_tree_spatial_index.h"
 #include "taxi_domain.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -310,6 +312,100 @@ inline std::vector<CandidateEdge>
 generate_candidate_edges(const BatchDispatchInput &batch,
                          const CandidateEdgeOptions &options) {
   return generate_candidate_edges_with_stats(batch, options).edges;
+}
+
+inline CandidateEdgeGenerationResult generate_candidate_edges_indexed_with_stats(
+    const BatchDispatchInput &batch, const CandidateEdgeOptions &options) {
+  CandidateEdgeGenerationResult result;
+  result.stats.total_drivers = batch.drivers.size();
+  result.stats.total_requests = batch.requests.size();
+
+  for (const auto &driver : batch.drivers) {
+    if (is_available_for_batch(driver, batch.batch_time)) {
+      ++result.stats.available_drivers;
+    }
+  }
+
+  if (options.radius < 0.0 || options.seconds_per_distance_unit <= 0.0) {
+    return result;
+  }
+
+  KdTreeSpatialIndex driver_index;
+  std::unordered_map<int, DriverSnapshot> drivers_by_id;
+  drivers_by_id.reserve(batch.drivers.size());
+
+  for (const auto &driver : batch.drivers) {
+    if (!is_available_for_batch(driver, batch.batch_time)) {
+      continue;
+    }
+    drivers_by_id[driver.taxi_id] = driver;
+    driver_index.upsert(Point(driver.location.coords[0],
+                              driver.location.coords[1], driver.taxi_id));
+  }
+
+  for (const auto &request : batch.requests) {
+    if (!is_request_ready_for_batch(request, batch.batch_time)) {
+      continue;
+    }
+    ++result.stats.ready_requests;
+
+    std::vector<CandidateEdge> request_edges;
+    const auto nearby_drivers =
+        driver_index.radius_query(request.pickup_location, options.radius);
+    for (const auto &candidate : nearby_drivers) {
+      const auto driver_it = drivers_by_id.find(candidate.id);
+      if (driver_it == drivers_by_id.end()) {
+        continue;
+      }
+
+      const DriverSnapshot &driver = driver_it->second;
+      if (options.same_tile_only && !is_same_pickup_tile(driver, request)) {
+        continue;
+      }
+
+      const int cost = estimate_pickup_cost(
+          driver.location, request.pickup_location,
+          options.seconds_per_distance_unit);
+      if (cost == std::numeric_limits<int>::max()) {
+        continue;
+      }
+
+      request_edges.emplace_back(driver.taxi_id, request.request_id, cost);
+    }
+
+    request_edges = normalize_candidate_edges(std::move(request_edges));
+
+    std::sort(request_edges.begin(), request_edges.end(),
+              [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+                if (lhs.pickup_cost != rhs.pickup_cost) {
+                  return lhs.pickup_cost < rhs.pickup_cost;
+                }
+                return lhs.taxi_id < rhs.taxi_id;
+              });
+
+    if (options.max_edges_per_request > 0 &&
+        request_edges.size() > options.max_edges_per_request) {
+      request_edges.resize(options.max_edges_per_request);
+    }
+
+    if (request_edges.empty()) {
+      ++result.stats.requests_without_edges;
+    } else {
+      ++result.stats.requests_with_edges;
+    }
+
+    result.edges.insert(result.edges.end(), request_edges.begin(),
+                        request_edges.end());
+  }
+
+  result.stats.candidate_edges = result.edges.size();
+  return result;
+}
+
+inline std::vector<CandidateEdge>
+generate_candidate_edges_indexed(const BatchDispatchInput &batch,
+                                 const CandidateEdgeOptions &options) {
+  return generate_candidate_edges_indexed_with_stats(batch, options).edges;
 }
 
 inline std::vector<CandidateEdge>

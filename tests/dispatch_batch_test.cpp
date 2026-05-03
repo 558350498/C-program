@@ -4,6 +4,27 @@
 #include <vector>
 
 int main() {
+  const auto assert_same_edges = [](const std::vector<CandidateEdge> &lhs,
+                                    const std::vector<CandidateEdge> &rhs) {
+    assert(lhs.size() == rhs.size());
+    for (std::size_t index = 0; index < lhs.size(); ++index) {
+      assert(lhs[index].taxi_id == rhs[index].taxi_id);
+      assert(lhs[index].request_id == rhs[index].request_id);
+      assert(lhs[index].pickup_cost == rhs[index].pickup_cost);
+    }
+  };
+
+  const auto assert_same_stats = [](const CandidateEdgeStats &lhs,
+                                    const CandidateEdgeStats &rhs) {
+    assert(lhs.total_drivers == rhs.total_drivers);
+    assert(lhs.total_requests == rhs.total_requests);
+    assert(lhs.available_drivers == rhs.available_drivers);
+    assert(lhs.ready_requests == rhs.ready_requests);
+    assert(lhs.candidate_edges == rhs.candidate_edges);
+    assert(lhs.requests_with_edges == rhs.requests_with_edges);
+    assert(lhs.requests_without_edges == rhs.requests_without_edges);
+  };
+
   PassengerRequest default_request;
   assert(default_request.request_id == -1);
   assert(default_request.customer_id == -1);
@@ -108,8 +129,26 @@ int main() {
   assert(candidate_result.stats.requests_with_edges == 2);
   assert(candidate_result.stats.requests_without_edges == 1);
 
+  const auto indexed_candidate_result =
+      generate_candidate_edges_indexed_with_stats(
+          matching_batch, CandidateEdgeOptions(2.0, 10.0));
+  assert_same_stats(candidate_result.stats, indexed_candidate_result.stats);
+  assert_same_edges(candidate_result.edges, indexed_candidate_result.edges);
+
   assert(generate_candidate_edges(matching_batch, -1.0).empty());
   assert(generate_candidate_edges(matching_batch, 2.0, 0.0).empty());
+  const auto bad_radius_indexed = generate_candidate_edges_indexed_with_stats(
+      matching_batch, CandidateEdgeOptions(-1.0, 10.0));
+  assert(bad_radius_indexed.edges.empty());
+  assert(bad_radius_indexed.stats.total_drivers == 4);
+  assert(bad_radius_indexed.stats.total_requests == 4);
+  assert(bad_radius_indexed.stats.available_drivers == 2);
+  const auto bad_cost_indexed = generate_candidate_edges_indexed_with_stats(
+      matching_batch, CandidateEdgeOptions(2.0, 0.0));
+  assert(bad_cost_indexed.edges.empty());
+  assert(bad_cost_indexed.stats.total_drivers == 4);
+  assert(bad_cost_indexed.stats.total_requests == 4);
+  assert(bad_cost_indexed.stats.available_drivers == 2);
 
   std::vector<DriverSnapshot> dense_drivers;
   dense_drivers.emplace_back(1, Point(0.0, 0.0, 1), 1, TaxiStatus::free, 100);
@@ -129,6 +168,9 @@ int main() {
   assert(top_one_edges[0].taxi_id == 2);
   assert(top_one_edges[0].request_id == 201);
   assert(top_one_edges[0].pickup_cost == 1);
+  assert_same_edges(top_one_edges,
+                    generate_candidate_edges_indexed(dense_batch,
+                                                     top_one_options));
 
   const CandidateEdgeOptions same_tile_options(2.0, 10.0, 0, true);
   const auto same_tile_edges =
@@ -136,6 +178,9 @@ int main() {
   assert(same_tile_edges.size() == 2);
   assert(same_tile_edges[0].taxi_id == 2);
   assert(same_tile_edges[1].taxi_id == 1);
+  assert_same_edges(same_tile_edges,
+                    generate_candidate_edges_indexed(dense_batch,
+                                                     same_tile_options));
 
   std::vector<CandidateEdge> duplicate_edges;
   duplicate_edges.emplace_back(1, 201, 20);

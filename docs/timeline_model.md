@@ -211,14 +211,7 @@ pending
 request arrival -> batch matching -> apply assignment -> start trip -> complete trip
 ```
 
-## 10. 下一步实现建议
-
-后续可以继续增强回放模块：
-
-- `TaxiSystem` 已支持日志开关，replay 默认关闭系统状态日志，避免污染 summary。
-- 已增加标准化 `drivers.csv` / `requests.csv` 读取入口。
-- 允许从标准化输入读取真实或近似的 `trip_duration_seconds`。
-- 为 CSV 接入后的数据质量检查保留 batch 明细输出。
+## 10. IO 边界
 
 标准化 CSV 读取代码：
 
@@ -231,3 +224,4 @@ request arrival -> batch matching -> apply assignment -> start trip -> complete 
 - C++ 只读取项目内部标准化字段。
 - CSV loader 不解析 Kaggle 原始字段。
 - 坏行会被记录到 `errors`，好行仍然保留。
+- replay 默认关闭 `TaxiSystem` 状态日志，避免污染 summary。

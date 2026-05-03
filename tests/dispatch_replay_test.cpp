@@ -35,13 +35,16 @@ int main() {
   REQUIRE(metrics.unserved_requests == 0);
   REQUIRE(metrics.batch_runs == 25);
   REQUIRE(metrics.candidate_edges_total == 2);
-  REQUIRE(metrics.requests_with_candidate_edges_total == 2);
-  REQUIRE(metrics.requests_without_candidate_edges_total == 0);
+  REQUIRE(metrics.requests_with_edges_total == 2);
+  REQUIRE(metrics.requests_without_edges_total == 0);
+  REQUIRE(metrics.unique_requests_without_edges == 0);
   REQUIRE(metrics.mcmf_assigned_total == 2);
   REQUIRE(metrics.applied_pickup_cost_total == 50);
+  REQUIRE(metrics.wait_time_total == 40);
   REQUIRE(assignment_rate(metrics) == 1.0);
   REQUIRE(completion_rate(metrics) == 1.0);
   REQUIRE(average_applied_pickup_cost(metrics) == 25.0);
+  REQUIRE(average_assignment_wait_time(metrics) == 20.0);
   REQUIRE(report.batch_logs.size() == 25);
 
   bool saw_first_assignment_batch = false;
@@ -77,7 +80,8 @@ int main() {
   REQUIRE(unserved_metrics.completed_requests == 0);
   REQUIRE(unserved_metrics.unserved_requests == 1);
   REQUIRE(unserved_metrics.candidate_edges_total == 0);
-  REQUIRE(unserved_metrics.requests_without_candidate_edges_total == 2);
+  REQUIRE(unserved_metrics.requests_without_edges_total == 2);
+  REQUIRE(unserved_metrics.unique_requests_without_edges == 1);
   REQUIRE(unserved_metrics.mcmf_assigned_total == 0);
 
   return 0;

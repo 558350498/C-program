@@ -26,6 +26,12 @@ endif()
 add_executable(taxi_demo src/main.cpp)
 target_link_libraries(taxi_demo PRIVATE taxi_core)
 
+add_executable(replay_csv_demo src/replay_csv_demo.cpp)
+target_link_libraries(replay_csv_demo PRIVATE taxi_core)
+
+add_executable(k_sweep src/k_sweep.cpp)
+target_link_libraries(k_sweep PRIVATE taxi_core)
+
 if(BUILD_TESTING)
   add_executable(kd_tree_spatial_index_test tests/kd_tree_spatial_index_test.cpp)
   target_link_libraries(kd_tree_spatial_index_test PRIVATE taxi_core)

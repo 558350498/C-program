@@ -6,6 +6,7 @@
 #include <optional>
 #include <queue>
 #include <sstream>
+#include <unordered_set>
 #include <unordered_map>
 
 namespace {
@@ -131,6 +132,7 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
   std::priority_queue<ReplayEvent, std::vector<ReplayEvent>, ReplayEventCompare>
       events;
   std::unordered_map<int, std::unique_ptr<RequestContext>> request_contexts;
+  std::unordered_set<int> requests_without_candidate_edges;
 
   for (TimeSeconds time = options.start_time; time <= options.end_time;
        time += options.batch_interval_seconds) {
@@ -191,9 +193,9 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
 
       ++metrics.batch_runs;
       metrics.candidate_edges_total += candidate_result.stats.candidate_edges;
-      metrics.requests_with_candidate_edges_total +=
+      metrics.requests_with_edges_total +=
           candidate_result.stats.requests_with_edges;
-      metrics.requests_without_candidate_edges_total +=
+      metrics.requests_without_edges_total +=
           candidate_result.stats.requests_without_edges;
       metrics.greedy_assigned_total += greedy_assignments.size();
       metrics.mcmf_assigned_total += mcmf_assignments.size();
@@ -208,6 +210,17 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
       batch_log.mcmf_assigned = mcmf_assignments.size();
       batch_log.greedy_cost = greedy_cost;
       batch_log.mcmf_cost = mcmf_cost;
+
+      std::unordered_set<int> requests_with_edges;
+      requests_with_edges.reserve(candidate_edges.size());
+      for (const auto &edge : candidate_edges) {
+        requests_with_edges.insert(edge.request_id);
+      }
+      for (const auto &request : pending_requests) {
+        if (requests_with_edges.count(request.request_id) == 0) {
+          requests_without_candidate_edges.insert(request.request_id);
+        }
+      }
 
       for (const auto &assignment : mcmf_assignments) {
         const auto context_it = request_contexts.find(assignment.request_id);
@@ -228,6 +241,10 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
             event.time + assignment.pickup_cost + options.trip_duration_seconds;
         ++metrics.assigned_requests;
         metrics.applied_pickup_cost_total += assignment.pickup_cost;
+        if (event.time >= request->request_time) {
+          metrics.wait_time_total +=
+              event.time - request->request_time;
+        }
         ++batch_log.applied_assignments;
         batch_log.applied_pickup_cost += assignment.pickup_cost;
 
@@ -284,6 +301,8 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
     }
   }
 
+  metrics.unique_requests_without_edges = requests_without_candidate_edges.size();
+
   return report;
 }
 
@@ -311,6 +330,14 @@ double average_applied_pickup_cost(const DispatchReplayMetrics &metrics) {
          static_cast<double>(metrics.assigned_requests);
 }
 
+double average_assignment_wait_time(const DispatchReplayMetrics &metrics) {
+  if (metrics.assigned_requests == 0) {
+    return 0.0;
+  }
+  return static_cast<double>(metrics.wait_time_total) /
+         static_cast<double>(metrics.assigned_requests);
+}
+
 std::string format_dispatch_replay_report(const DispatchReplayReport &report,
                                           bool include_batch_logs) {
   const DispatchReplayMetrics &metrics = report.metrics;
@@ -326,15 +353,18 @@ std::string format_dispatch_replay_report(const DispatchReplayReport &report,
   stream << "batches runs=" << metrics.batch_runs
          << " candidate_edges=" << metrics.candidate_edges_total
          << " requests_with_edges="
-         << metrics.requests_with_candidate_edges_total
+         << metrics.requests_with_edges_total
          << " requests_without_edges="
-         << metrics.requests_without_candidate_edges_total << '\n';
+         << metrics.requests_without_edges_total
+         << " unique_requests_without_edges="
+         << metrics.unique_requests_without_edges << '\n';
   stream << "strategy greedy_assigned=" << metrics.greedy_assigned_total
          << " greedy_cost=" << metrics.greedy_cost_total
          << " mcmf_assigned=" << metrics.mcmf_assigned_total
          << " mcmf_cost=" << metrics.mcmf_cost_total << '\n';
   stream << "applied pickup_cost_total=" << metrics.applied_pickup_cost_total
          << " pickup_cost_avg=" << average_applied_pickup_cost(metrics)
+         << " assignment_wait_avg=" << average_assignment_wait_time(metrics)
          << '\n';
 
   if (!include_batch_logs || report.batch_logs.empty()) {

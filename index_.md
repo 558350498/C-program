@@ -1,24 +1,20 @@
 # 工程导航索引
 
-这份索引不是实现细节文档，它的目标是：忘记函数名或调用关系时，能快速定位应该看哪个模块。
+这份文件只负责快速定位模块。设计解释看 `docs/`，当前计划看 `plan/`。
 
-## 当前主分层
+## 必读顺序
+
+1. `index_.md`
+2. `docs/system_modeling.md`
+3. `docs/timeline_model.md`
+4. `docs/algorithm_and_strategy.md`
+5. `plan/dispatch_next_steps.md`
+
+## 模块索引
 
 ### TaxiSystem
 
-负责什么：
-
-1. 作为业务编排入口。
-2. 管 taxi 注册、上下线、位置更新、状态迁移。
-3. 调用空间索引和派单策略。
-4. 编排 request 生命周期入口，例如派单、开始行程、完成行程、取消请求。
-
-不负责什么：
-
-1. 不直接实现空间搜索算法。
-2. 不直接实现具体派单策略。
-3. 不保存复杂历史订单数据。
-4. 不负责 CSV、tile、MCMF 等离线仿真输入。
+业务编排入口，负责 taxi 注册、上下线、位置更新、状态迁移、request 生命周期回写。
 
 核心入口：
 
@@ -30,43 +26,46 @@
 - `set_taxi_offline`
 - `update_taxi_position`
 - `update_taxi_status`
-- `apply_assignment(IRequestContext&, const Assignment&)`
-- `dispatch_nearest(IRequestContext&, double)`
-- `start_trip(IRequestContext&)`
-- `complete_trip(IRequestContext&)`
-- `cancel_request(IRequestContext&)`
+- `apply_assignment`
+- `dispatch_nearest`
+- `start_trip`
+- `complete_trip`
+- `cancel_request`
 
-代码位置：
+位置：
 
 - `include/taxi_system.h`
 - `src/taxi_system.cpp`
+- `tests/taxi_system_test.cpp`
 
-当前关键约束：
+关键约束：
 
 - `occupy` taxi 不能直接 offline。
-- `occupy` taxi 不能通过 `update_taxi_status(..., free)` 绕过 request 生命周期释放。
-- 释放占用车辆应该走 `complete_trip` 或 `cancel_request`。
-- 批量匹配结果不能在策略层直接改状态，应该统一交给 `apply_assignment` 回写。
-- replay / CSV 批量场景可以关闭 `TaxiSystem` 日志，避免状态日志污染指标输出。
+- `occupy` taxi 不能通过 `update_taxi_status(..., free)` 绕过 request 生命周期。
+- 批量匹配结果统一交给 `apply_assignment` 回写。
+- replay / CSV 批量场景默认关闭 `TaxiSystem` 日志。
 
----
+### RequestContext
 
-### Batch dispatch / Candidate edges
+单个 request 生命周期和 taxi 绑定关系。
 
-负责什么：
+状态：
 
-1. 定义离线批量匹配使用的标准化快照数据。
-2. 表示一批可用司机、一批待处理请求和候选匹配边。
-3. 根据半径、top-k、tile 粗筛条件生成候选边。
-4. 提供当前阶段的批量贪心 baseline。
-5. 给 MCMF 等批量策略提供统一输入。
+- `pending`
+- `dispatched`
+- `serving`
+- `completed`
+- `canceled`
 
-不负责什么：
+位置：
 
-1. 不直接修改 `TaxiSystem` 内部 taxi 状态。
-2. 不直接修改 request 生命周期。
-3. 不实现完整 MCMF。
-4. 不负责 CSV 原始字段解析和真实路网 ETA。
+- `include/requestcontext.h`
+- `src/requestcontext.cpp`
+- `tests/requestcontext_test.cpp`
+
+### Batch Dispatch / Candidate Edges
+
+标准化批量匹配输入、候选边生成、贪心 baseline。
 
 核心类型：
 
@@ -90,49 +89,29 @@
 - `generate_candidate_edges`
 - `greedy_batch_assign`
 
-代码位置：
+位置：
 
 - `include/dispatch_batch.h`
 - `tests/dispatch_batch_test.cpp`
 
-当前状态流：
+### McmfBatchStrategy
 
-1. batch 模块只接收快照数据。
-2. `generate_candidate_edges_with_stats` 生成 `taxi_id -> request_id` 候选边、`pickup_cost` 和候选边统计。
-3. `normalize_candidate_edges` 过滤非法候选边，并对同一 `taxi_id/request_id` 保留最低 cost。
-4. `generate_candidate_edges` 保持原便捷入口，只返回候选边列表。
-5. `greedy_batch_assign` 产出 `Assignment` 列表。
-6. 状态回写由 `TaxiSystem::apply_assignment` 逐条提交。
+在候选边集合上做最小费用最大流：先最大化匹配数量，再最小化接驾总代价。
 
----
+核心入口：
 
-### Timeline replay model
+- `assign(const std::vector<CandidateEdge>&)`
+- `assign(const BatchDispatchInput&, const CandidateEdgeOptions&)`
 
-负责什么：
+位置：
 
-1. 约定离线仿真的时间推进方式。
-2. 说明 batch 多久跑一次。
-3. 定义 request arrival、batch dispatch、pickup arrival、trip complete 的处理顺序。
-4. 驱动第一版事件回放器完成虚空行走流程测试。
+- `include/mcmf_batch_strategy.h`
+- `src/mcmf_batch_strategy.cpp`
+- `tests/mcmf_batch_strategy_test.cpp`
 
-核心约定：
+### DispatchReplay
 
-- 第一版 `batch_interval_seconds = 30`。
-- `pickup_cost` 暂时按秒理解。
-- 第一版 `trip_duration_seconds = 600`。
-- 第一版采用“虚空行走”：不模拟真实道路，订单完成时 taxi 直接出现在终点。
-- 未匹配 request 留到下一轮继续参与匹配。
-- replay 会记录总指标和每轮 batch 日志，用于展示和后续 CSV 数据质量排查。
-
-文档位置：
-
-- `docs/timeline_model.md`
-
-代码位置：
-
-- `include/dispatch_replay.h`
-- `src/dispatch_replay.cpp`
-- `tests/dispatch_replay_test.cpp`
+离线事件回放器，负责 request arrival、batch dispatch、pickup arrival、trip complete 的推进和指标输出。
 
 核心入口：
 
@@ -143,246 +122,139 @@
 - `completion_rate`
 - `average_applied_pickup_cost`
 
----
+位置：
 
-### Go CSV preprocessing
+- `include/dispatch_replay.h`
+- `src/dispatch_replay.cpp`
+- `tests/dispatch_replay_test.cpp`
 
-负责什么：
+### Replay CLI / Experiments
 
-1. 读取 Kaggle 原始 taxi trip CSV。
-2. 清洗时间、坐标、缺失值和异常行。
-3. 做抽样和简单 tile 映射。
-4. 输出 C++ replay 可直接读取的标准化文件。
+离线回放和参数扫描入口。
 
-不负责什么：
+核心工具：
 
-1. 不直接调用 C++ 对象。
-2. 不修改 `TaxiSystem` 状态。
-3. 不实现 MCMF。
+- `replay_csv_demo`：读取 normalized CSV，运行一次 replay 并输出 summary。
+- `k_sweep`：对候选集规模 `max_edges_per_request` 和候选半径做批量扫描，输出 CSV。
+- `go_experiments`：Go 实验编排层，调用 `k_sweep` 并补充供需比、订单里程收入、接驾成本和粗略净收入估算。
 
-建议输出：
+位置：
 
-- `requests.csv`
-- `drivers.csv`
+- `src/replay_csv_demo.cpp`
+- `src/k_sweep.cpp`
+- `tools/go_experiments/main.go`
+- `tools/go_experiments/go.mod`
 
-边界原则：
+常用输出字段：
 
-- Go 负责数据预处理。
-- C++ 负责调度核心、状态机、MCMF 和事件回放。
-- 两边第一版通过文件交互。
+- `assignment_rate`
+- `completion_rate`
+- `candidate_edges`
+- `avg_pickup_cost`
+- `supply_demand_ratio`
+- `estimated_net_revenue`
 
 ### Replay CSV IO
 
-负责什么：
-
-1. 读取标准化 `requests.csv`。
-2. 读取标准化 `drivers.csv`。
-3. 把文件数据转换成 `PassengerRequest` 和 `DriverSnapshot`。
-4. 记录行级解析错误，跳过坏行，保留可用行。
-
-不负责什么：
-
-1. 不解析 Kaggle 原始字段。
-2. 不做坐标清洗和 tile 映射。
-3. 不运行调度仿真。
-4. 不修改 `TaxiSystem` 状态。
+读取标准化 `requests.csv` / `drivers.csv`，转换成 C++ replay 内存对象。
 
 核心入口：
 
 - `load_passenger_requests_csv`
 - `load_driver_snapshots_csv`
 
-代码位置：
+位置：
 
 - `include/dispatch_replay_io.h`
 - `src/dispatch_replay_io.cpp`
 - `tests/dispatch_replay_io_test.cpp`
 
----
+### Spatial Index
 
-### McmfBatchStrategy
+空闲 taxi 的空间索引抽象和 KD-Tree 实现。
 
-负责什么：
-
-1. 在候选边集合上做最大匹配。
-2. 在最大匹配数量相同的解里最小化总代价。
-3. 作为后续等待时间、未服务惩罚等成本模型的扩展点。
-
-不负责什么：
-
-1. 核心算法不拥有候选边生成逻辑；batch 便捷入口只复用统一候选边生成器。
-2. 不直接读取 `TaxiSystem` 内部状态。
-3. 不直接修改 request/taxi 状态。
-4. 当前第一版不建模未服务惩罚。
-
-核心入口：
-
-- `assign(const std::vector<CandidateEdge>&)`
-- `assign(const BatchDispatchInput&, const CandidateEdgeOptions&)`
-
-代码位置：
-
-- `include/mcmf_batch_strategy.h`
-- `src/mcmf_batch_strategy.cpp`
-- `tests/mcmf_batch_strategy_test.cpp`
-
-当前算法含义：
-
-1. 源点连接 taxi，容量为 1。
-2. taxi 通过 `CandidateEdge` 连接 request，容量为 1，费用为 `pickup_cost`。
-3. request 连接汇点，容量为 1。
-4. 使用最小费用最大流求解，先保证匹配数量最大，再最小化总代价。
-5. 进入 MCMF 前会先规范化候选边，避免非法边和重复边污染流图。
-
-当前验证入口：
-
-- `mcmf_batch_strategy_test`
-- `smoke`
-
----
-
-### IRequestContext / RequestContext
-
-负责什么：
-
-1. 管单个 request 的生命周期。
-2. 记录 request 和 taxi 的绑定关系。
-3. 提供 request 状态查询。
-4. 给以后替换 request 存储或上下文实现留虚接口。
-
-不负责什么：
-
-1. 不做派单算法。
-2. 不做空间索引维护。
-3. 不直接修改 taxi 状态。
-4. 不替代 `TaxiSystem` 做业务总编排。
-
-核心状态：
-
-- `pending`
-- `dispatched`
-- `serving`
-- `completed`
-- `canceled`
-
-核心入口：
-
-- `assign_taxi`
-- `start_trip`
-- `complete_request`
-- `cancel_request`
-- `taxi_id`
-- `status`
-- `start_location`
-- `end_location`
-
-代码位置：
-
-- `include/requestcontext.h`
-- `src/requestcontext.cpp`
-
-当前状态流：
-
-1. 新建 request 后是 `pending`。
-2. `dispatch_nearest` 成功后调用 `assign_taxi`，状态变为 `dispatched`。
-3. `start_trip` 成功后状态变为 `serving`。
-4. `complete_trip` 成功后状态变为 `completed`，绑定 taxi 被释放。
-5. `cancel_request` 成功后状态变为 `canceled`，绑定 taxi 被释放。
-
----
-
-### ISpatialIndex / KdTreeSpatialIndex
-
-负责什么：
-
-1. 管空闲 taxi 的空间索引。
-2. 提供半径搜索。
-3. 提供索引重建能力。
-
-不负责什么：
-
-1. 不管 request 生命周期。
-2. 不决定最终派给哪辆车。
-3. 不承载业务状态机。
-
-核心入口：
-
-- `upsert`
-- `erase`
-- `radius_search`
-- `rebuild`
-- `size`
-- `clear`
-
-代码位置：
+位置：
 
 - `include/spatial_index.h`
 - `include/kd_tree_spatial_index.h`
 - `src/kd_tree_spatial_index.cpp`
+- `tests/kd_tree_spatial_index_test.cpp`
 
----
+### Dispatch Strategy
 
-### IDispatchStrategy / NearestFreeTaxiStrategy
+单次派单策略抽象和最近空闲车策略。
 
-负责什么：
-
-1. 在给定 taxi 状态和空间索引时选择候选 taxi。
-2. 作为最近车、batch matching、MCMF 等策略的扩展点。
-
-不负责什么：
-
-1. 不直接管理 taxi 生命周期。
-2. 不记录 request 和 taxi 的绑定事实。
-3. 不应该成为业务状态机本体。
-
-核心入口：
-
-- `select_taxi`
-
-代码位置：
+位置：
 
 - `include/dispatch_strategy.h`
 - `include/nearest_free_taxi_strategy.h`
 - `src/dispatch_strategy.cpp`
+- `tests/dispatch_strategy_test.cpp`
 
-当前注意点：
+### Domain
 
-- 默认策略里仍有少量 stale index 清理逻辑。
-- 后续做 batch matching / dry-run / MCMF 时，最好逐步收敛成更纯的决策接口。
+基础领域对象。
 
----
+核心类型：
 
-### Taxi / Point / TaxiStatus
+- `Taxi`
+- `Point`
+- `TaxiStatus`
 
-负责什么：
-
-1. 定义系统最基础的领域对象。
-2. 在业务层、索引层、策略层之间共享数据表示。
-
-核心状态：
-
-- `TaxiStatus::free`
-- `TaxiStatus::occupy`
-- `TaxiStatus::offline`
-
-代码位置：
+位置：
 
 - `include/taxi_domain.h`
 - `src/taxi_domain.cpp`
 
-## 忘记函数时怎么找
+### Go CSV Preprocess
 
-1. 先判断问题属于哪一类：业务编排、batch 输入、request 生命周期、空间搜索、派单决策、基础领域对象。
-2. 进入对应模块看核心入口。
-3. 状态变化优先看 `TaxiSystem` 和 `RequestContext`。
-4. 批量匹配输入和候选边优先看 `dispatch_batch.h`。
-5. 离线回放指标和 batch 日志优先看 `dispatch_replay.h`。
-6. 算法策略优先看 `IDispatchStrategy` / `McmfBatchStrategy`。
-7. 空间查询优先看 `ISpatialIndex`。
+读取 Kaggle raw CSV，输出标准化 replay 输入，并合成供不应求司机快照。支持 `-window-seconds` 选取连续 pickup-time 窗口，避免前 N 条 raw row 横跨过长时间。
 
-## 当前设计原则
+位置：
 
-1. 不过度设计。
-2. 频繁变化的地方保留虚接口。
-3. 稳定领域对象保持薄接口。
-4. 先补业务生命周期闭环，再扩 CSV、tile 和 MCMF。
+- `tools/go_csv_preprocess/main.go`
+- `tools/go_csv_preprocess/README.md`
+
+输出：
+
+- `data/normalized/requests.csv`
+- `data/normalized/drivers.csv`
+
+## 常用命令
+
+```powershell
+cmake -S . -B build-mingw -G "MinGW Makefiles"
+cmake --build build-mingw
+ctest --test-dir build-mingw --output-on-failure
+```
+
+Go 小样本预处理：
+
+```powershell
+cd tools\go_csv_preprocess
+go run . `
+  -input ..\..\data\datasets\nyc-taxi-trip-duration\raw\NYC.csv `
+  -output ..\..\data\normalized\requests.csv `
+  -drivers-output ..\..\data\normalized\drivers.csv `
+  -window-seconds 86400 `
+  -limit 1000
+```
+
+Replay CLI：
+
+```powershell
+build-mingw\replay_csv_demo.exe
+```
+
+候选集规模扫描：
+
+```powershell
+build-mingw\k_sweep.exe --radii 0.01,0.03,0.05 --k-values 1,2,5,unlimited
+```
+
+Go 实验 runner：
+
+```powershell
+cd tools\go_experiments
+go run .
+```

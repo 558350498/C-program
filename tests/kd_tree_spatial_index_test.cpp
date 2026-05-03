@@ -26,6 +26,24 @@ int main() {
   nearby = index.radius_search(Point(0.0, 0.0, 100), 2.0);
   assert(nearby.size() == 2U);
 
+  auto query = index.radius_query(Point(1.0, 0.0, 100), 3.0);
+  assert(query.size() == 3U);
+  assert(query[0].id == 1);
+  assert(query[0].distance_sq == 1.0);
+  assert(query[1].id == 2);
+  assert(query[1].distance_sq == 1.0);
+  assert(query[2].id == 3);
+  assert(query[2].distance_sq == 9.0);
+  assert(index.radius_query(Point(1.0, 0.0, 100), -1.0).empty());
+
+  auto nearest = index.nearest_k(Point(1.1, 0.0, 100), 2);
+  assert(nearest.size() == 2U);
+  assert(nearest[0].id == 2);
+  assert(nearest[1].id == 1);
+  assert(index.nearest_k(Point(1.1, 0.0, 100), 0).empty());
+  nearest = index.nearest_k(Point(1.1, 0.0, 100), 99);
+  assert(nearest.size() == 3U);
+
   assert(index.upsert(Point(10.0, 0.0, 2)));
   assert(index.size() == 3U);
   nearby = index.radius_search(Point(2.0, 0.0, 101), 0.5);
@@ -33,6 +51,11 @@ int main() {
   nearby = index.radius_search(Point(10.0, 0.0, 102), 0.5);
   assert(nearby.size() == 1U);
   assert(nearby.front().id == 2);
+  query = index.radius_query(Point(2.0, 0.0, 101), 0.5);
+  assert(query.empty());
+  nearest = index.nearest_k(Point(10.0, 0.0, 102), 1);
+  assert(nearest.size() == 1U);
+  assert(nearest.front().id == 2);
   assert(index.upsert(Point(12.0, 0.0, 2)));
   assert(index.upsert(Point(2.0, 0.0, 2)));
   assert(index.size() == 3U);
@@ -47,6 +70,10 @@ int main() {
   assert(!index.erase(1));
   nearby = index.radius_search(Point(0.0, 0.0, 102), 0.1);
   assert(nearby.empty());
+  query = index.radius_query(Point(0.0, 0.0, 102), 100.0);
+  for (const auto &result : query) {
+    assert(result.id != 1);
+  }
   assert(index.upsert(Point(-5.0, 0.0, 1)));
   assert(index.size() == 3U);
   nearby = index.radius_search(Point(-5.0, 0.0, 102), 0.1);
@@ -78,6 +105,13 @@ int main() {
   nearby = index.radius_search(Point(3.0, 3.0, 103), 0.2);
   assert(nearby.size() == 1U);
   assert(nearby.front().id == 7);
+  query = index.radius_query(Point(3.0, 3.0, 103), 0.2);
+  assert(query.size() == 1U);
+  assert(query.front().id == 7);
+  nearest = index.nearest_k(Point(3.0, 3.0, 103), 5);
+  assert(nearest.size() == 2U);
+  assert(nearest[0].id == 7);
+  assert(nearest[1].id == 8);
 
   nearby = index.radius_search(Point(1.0, 1.0, 103), 0.2);
   assert(nearby.empty());

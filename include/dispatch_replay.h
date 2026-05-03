@@ -42,21 +42,23 @@ struct DispatchReplayMetrics {
   std::size_t unserved_requests;
   std::size_t batch_runs;
   std::size_t candidate_edges_total;
-  std::size_t requests_with_candidate_edges_total;
-  std::size_t requests_without_candidate_edges_total;
+  std::size_t requests_with_edges_total;
+  std::size_t requests_without_edges_total;
+  std::size_t unique_requests_without_edges;
   std::size_t greedy_assigned_total;
   std::size_t mcmf_assigned_total;
   int greedy_cost_total;
   int mcmf_cost_total;
   int applied_pickup_cost_total;
+  TimeSeconds wait_time_total;
 
   DispatchReplayMetrics()
       : total_requests(0), assigned_requests(0), completed_requests(0),
         unserved_requests(0), batch_runs(0), candidate_edges_total(0),
-        requests_with_candidate_edges_total(0),
-        requests_without_candidate_edges_total(0), greedy_assigned_total(0),
+        requests_with_edges_total(0), requests_without_edges_total(0),
+        unique_requests_without_edges(0), greedy_assigned_total(0),
         mcmf_assigned_total(0), greedy_cost_total(0), mcmf_cost_total(0),
-        applied_pickup_cost_total(0) {}
+        applied_pickup_cost_total(0), wait_time_total(0) {}
 };
 
 struct DispatchReplayBatchLog {
@@ -103,5 +105,6 @@ private:
 double completion_rate(const DispatchReplayMetrics &metrics);
 double assignment_rate(const DispatchReplayMetrics &metrics);
 double average_applied_pickup_cost(const DispatchReplayMetrics &metrics);
+double average_assignment_wait_time(const DispatchReplayMetrics &metrics);
 std::string format_dispatch_replay_report(const DispatchReplayReport &report,
                                           bool include_batch_logs = true);
