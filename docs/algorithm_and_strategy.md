@@ -212,7 +212,64 @@ if dropoff_near_cold_area:
 
 这里仍然不是机器学习，因为所有因子都来自明确统计和手写规则。
 
-## 7. 初版可实现策略
+## 7. 多因子和递减收益
+
+当前 Go 实验 runner 已支持热点调价试验：
+
+- `linear`：直接使用热点因子。
+- `diminishing`：对热点因子应用分段递减收益。
+- `price_floor` / `price_cap`：限制价格因子的下限和上限。
+
+分段递减收益类似游戏数值里的护甲收益递减：
+
+```text
+0.0 - 0.3: 100% 生效
+0.3 - 0.6: 80% 生效
+0.6 - 0.9: 50% 生效
+0.9 - 1.0: 20% 生效
+```
+
+目的：
+
+- 保留热点加价趋势。
+- 避免极端热区价格因子过度放大。
+- 让策略仍然保持非机器学习、可解释、可调参。
+
+当前实验公式：
+
+```text
+price_factor = clamp(
+  1
+  + pickup_hot_weight * pickup_hotspot
+  - dropoff_hot_discount * dropoff_hotspot
+  + cold_dropoff_penalty * cold_dropoff,
+  price_floor,
+  price_cap
+)
+```
+
+实验输出关注：
+
+- `avg_price_factor`
+- `max_price_factor`
+- `hotspot_completed_revenue`
+- `hotspot_net_revenue`
+- `hotspot_net_delta`
+
+这套实验只估算价格变化对收入的影响，暂未建模价格上涨导致的需求流失。
+
+## 8. 当前工程状态
+
+当前已落地：
+
+- `k_sweep`：扫描候选集规模和半径。
+- `go_experiments`：补充供需比、订单里程收入、接驾成本、热点调价和粗略净收入。
+- KD-Tree 侧表化查询：`radius_query / nearest_k -> id + distance_sq`。
+- indexed 候选边对照路径：通过 KD-Tree 查询司机 id，再从 side table 取 `DriverSnapshot`。
+
+indexed 候选边路径暂不替换 replay 默认路径，先作为性能和正确性对照。
+
+## 9. 初版可实现策略
 
 第一阶段不直接做复杂价格，只做 replay 指标和参数扫描：
 
@@ -236,7 +293,7 @@ if dropoff_near_cold_area:
 4. 热区路径和高峰时段增加拥堵成本。
 5. replay 对比调价前后的服务率、平均成本和未服务订单。
 
-## 8. 当前不做
+## 10. 当前不做
 
 暂时不做：
 

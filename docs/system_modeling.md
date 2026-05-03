@@ -21,6 +21,7 @@
    - `RequestContext` 管单个 request 状态。
    - `dispatch_batch` 生成候选边和贪心 baseline。
    - `McmfBatchStrategy` 只在候选边集合上做匹配。
+   - `ISpatialIndex` 只负责空间查询，业务数据通过 side table 挂载。
 
 4. 离线回放层
    - `DispatchReplaySimulator` 负责事件时间线。
@@ -88,6 +89,13 @@ taxi_id -> request_id, pickup_cost
 - 支持每个 request 的 top-k 限制。
 - 候选边会规范化：过滤非法边，并对重复 `taxi_id/request_id` 保留最低 cost。
 
+当前有两条候选边生成路径：
+
+- 全量扫描路径：作为默认 replay 路径和 baseline。
+- indexed 对照路径：使用 KD-Tree `radius_query` 查询候选司机 id，再通过 `taxi_id -> DriverSnapshot` side table 取业务数据。
+
+indexed 路径暂不替换默认 replay，先用于验证空间索引抽象和后续性能优化。
+
 MCMF 第一版：
 
 ```text
@@ -123,6 +131,13 @@ source -> taxi -> request -> sink
 tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
 ```
 
+空间索引抽象原则：
+
+- KD-Tree、grid index、tile bucket 都应隐藏在 `ISpatialIndex` 或候选生成器之后。
+- 空间索引返回轻量 `id + distance_sq` 查询结果。
+- taxi、request、heat 等业务字段放在外部 side table。
+- 后续热区统计和格点地图不应直接把业务对象塞进 KD-Tree node。
+
 ## 6. 当前不建议做
 
 当前阶段不要做：
@@ -145,4 +160,3 @@ tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
 - 变化频繁的 schema 放 Go。
 - 稳定的状态机和算法放 C++。
 - 策略只输出 `Assignment`，状态回写统一走 `TaxiSystem`。
-

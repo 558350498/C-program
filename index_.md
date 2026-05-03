@@ -87,6 +87,8 @@
 - `normalize_candidate_edges`
 - `generate_candidate_edges_with_stats`
 - `generate_candidate_edges`
+- `generate_candidate_edges_indexed_with_stats`
+- `generate_candidate_edges_indexed`
 - `greedy_batch_assign`
 
 位置：
@@ -136,7 +138,7 @@
 
 - `replay_csv_demo`：读取 normalized CSV，运行一次 replay 并输出 summary。
 - `k_sweep`：对候选集规模 `max_edges_per_request` 和候选半径做批量扫描，输出 CSV。
-- `go_experiments`：Go 实验编排层，调用 `k_sweep` 并补充供需比、订单里程收入、接驾成本和粗略净收入估算。
+- `go_experiments`：Go 实验编排层，调用 `k_sweep` 并补充供需比、订单里程收入、接驾成本、热点调价和粗略净收入估算。
 
 位置：
 
@@ -153,6 +155,10 @@
 - `avg_pickup_cost`
 - `supply_demand_ratio`
 - `estimated_net_revenue`
+- `pricing_mode`
+- `avg_price_factor`
+- `max_price_factor`
+- `hotspot_net_delta`
 
 ### Replay CSV IO
 
@@ -171,7 +177,7 @@
 
 ### Spatial Index
 
-空闲 taxi 的空间索引抽象和 KD-Tree 实现。
+空闲 taxi 的空间索引抽象和 KD-Tree 实现。当前支持旧的 `radius_search -> Point`，也支持侧表挂载友好的 `radius_query / nearest_k -> SpatialQueryResult{id, distance_sq}`。
 
 位置：
 
