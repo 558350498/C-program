@@ -14,12 +14,18 @@ import (
 	"strings"
 )
 
+const (
+	hotspotThreshold  = 0.7
+	coldspotThreshold = 0.3
+)
+
 type options struct {
 	requestsPath           string
 	driversPath            string
 	kSweepPath             string
 	radii                  string
 	kValues                string
+	indexedCandidates      bool
 	secondsPerDistanceUnit float64
 	farePerKm              float64
 	pickupCostPerKm        float64
@@ -28,6 +34,8 @@ type options struct {
 	seed                   int64
 	priceFloor             float64
 	priceCap               float64
+	coldDropoffPenalty     float64
+	hotDropoffDiscount     float64
 }
 
 type requestRow struct {
@@ -39,6 +47,17 @@ type requestRow struct {
 	dropoffTile int
 }
 
+type hotspotStats struct {
+	avgPickupHotspotScore  float64
+	avgDropoffHotspotScore float64
+	avgColdDropoffScore    float64
+	hotPickupRequests      int
+	hotDropoffRequests     int
+	coldDropoffRequests    int
+	hotDropoffRate         float64
+	coldDropoffRate        float64
+}
+
 func main() {
 	var opts options
 	flag.StringVar(&opts.requestsPath, "requests", "../../data/normalized/requests.csv", "normalized requests.csv path")
@@ -46,6 +65,7 @@ func main() {
 	flag.StringVar(&opts.kSweepPath, "k-sweep", "../../build-mingw/k_sweep.exe", "compiled k_sweep executable path")
 	flag.StringVar(&opts.radii, "radii", "0.01,0.03,0.05", "comma-separated candidate radii")
 	flag.StringVar(&opts.kValues, "k-values", "1,2,5,unlimited", "comma-separated k values")
+	flag.BoolVar(&opts.indexedCandidates, "indexed-candidates", false, "ask k_sweep to generate candidates with KD-Tree index")
 	flag.Float64Var(&opts.secondsPerDistanceUnit, "seconds-per-distance-unit", 100000.0, "pickup cost scale used by replay")
 	flag.Float64Var(&opts.farePerKm, "fare-per-km", 1.0, "fare revenue per completed trip kilometer")
 	flag.Float64Var(&opts.pickupCostPerKm, "pickup-cost-per-km", 1.0, "cost per pickup/deadhead kilometer")
@@ -54,6 +74,8 @@ func main() {
 	flag.Int64Var(&opts.seed, "seed", 20260504, "random seed for hotspot pricing trials")
 	flag.Float64Var(&opts.priceFloor, "price-floor", 0.8, "minimum hotspot price factor")
 	flag.Float64Var(&opts.priceCap, "price-cap", 1.8, "maximum hotspot price factor")
+	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "opportunity cold dropoff penalty passed to k_sweep")
+	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "opportunity hot dropoff discount passed to k_sweep")
 	flag.Parse()
 
 	if err := run(opts); err != nil {
@@ -80,6 +102,12 @@ func run(opts options) error {
 	}
 	if opts.priceCap < opts.priceFloor {
 		return fmt.Errorf("-price-cap must be greater than or equal to -price-floor")
+	}
+	if opts.coldDropoffPenalty < 0 {
+		return fmt.Errorf("-cold-dropoff-penalty must be non-negative")
+	}
+	if opts.hotDropoffDiscount < 0 {
+		return fmt.Errorf("-hot-dropoff-discount must be non-negative")
 	}
 
 	requests, err := loadRequests(opts.requestsPath)
@@ -108,6 +136,14 @@ func run(opts options) error {
 		"estimated_pickup_km",
 		"estimated_pickup_cost",
 		"estimated_net_revenue",
+		"global_avg_pickup_hotspot_score",
+		"global_avg_dropoff_hotspot_score",
+		"global_avg_cold_dropoff_score",
+		"global_hot_pickup_requests",
+		"global_hot_dropoff_requests",
+		"global_cold_dropoff_requests",
+		"global_hot_dropoff_rate",
+		"global_cold_dropoff_rate",
 	)
 	if opts.hotspotTrials > 0 {
 		header = append(header,
@@ -128,6 +164,7 @@ func run(opts options) error {
 	}
 
 	hotspot := buildHotspotSideTable(requests)
+	stats := summarizeHotspots(requests, hotspot)
 	rng := rand.New(rand.NewSource(opts.seed))
 
 	for _, row := range rows {
@@ -167,6 +204,14 @@ func run(opts options) error {
 			formatFloat(estimatedPickupKm),
 			formatFloat(estimatedPickupCost),
 			formatFloat(estimatedNetRevenue),
+			formatFloat(stats.avgPickupHotspotScore),
+			formatFloat(stats.avgDropoffHotspotScore),
+			formatFloat(stats.avgColdDropoffScore),
+			strconv.Itoa(stats.hotPickupRequests),
+			strconv.Itoa(stats.hotDropoffRequests),
+			strconv.Itoa(stats.coldDropoffRequests),
+			formatFloat(stats.hotDropoffRate),
+			formatFloat(stats.coldDropoffRate),
 		)
 
 		if opts.hotspotTrials == 0 {
@@ -232,7 +277,12 @@ func runKSweep(opts options) ([]sweepRow, error) {
 		"--radii", opts.radii,
 		"--k-values", opts.kValues,
 		"--seconds-per-distance-unit", strconv.FormatFloat(opts.secondsPerDistanceUnit, 'f', -1, 64),
+		"--cold-dropoff-penalty", strconv.FormatFloat(opts.coldDropoffPenalty, 'f', -1, 64),
+		"--hot-dropoff-discount", strconv.FormatFloat(opts.hotDropoffDiscount, 'f', -1, 64),
 	)
+	if opts.indexedCandidates {
+		cmd.Args = append(cmd.Args, "--indexed-candidates")
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
@@ -381,6 +431,41 @@ func buildHotspotSideTable(requests []requestRow) hotspotSideTable {
 		}
 	}
 	return table
+}
+
+func summarizeHotspots(requests []requestRow, table hotspotSideTable) hotspotStats {
+	stats := hotspotStats{}
+	if len(requests) == 0 {
+		return stats
+	}
+
+	for _, request := range requests {
+		pickupHeat := normalizedHeat(table.pickupHeatByTile[request.pickupTile], table.maxPickupHeat)
+		dropoffHeat := normalizedHeat(table.pickupHeatByTile[request.dropoffTile], table.maxPickupHeat)
+		coldDropoff := 1.0 - dropoffHeat
+
+		stats.avgPickupHotspotScore += pickupHeat
+		stats.avgDropoffHotspotScore += dropoffHeat
+		stats.avgColdDropoffScore += coldDropoff
+
+		if pickupHeat >= hotspotThreshold {
+			stats.hotPickupRequests++
+		}
+		if dropoffHeat >= hotspotThreshold {
+			stats.hotDropoffRequests++
+		}
+		if dropoffHeat <= coldspotThreshold {
+			stats.coldDropoffRequests++
+		}
+	}
+
+	requestCount := float64(len(requests))
+	stats.avgPickupHotspotScore /= requestCount
+	stats.avgDropoffHotspotScore /= requestCount
+	stats.avgColdDropoffScore /= requestCount
+	stats.hotDropoffRate = float64(stats.hotDropoffRequests) / requestCount
+	stats.coldDropoffRate = float64(stats.coldDropoffRequests) / requestCount
+	return stats
 }
 
 func randomHotspotParams(rng *rand.Rand) hotspotParams {

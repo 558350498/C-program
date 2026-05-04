@@ -17,6 +17,7 @@ compile_flags.txt
 # Build outputs.
 build/
 build-cmake/
+build-local/
 build-mingw/
 CMakeFiles/
 CMakeCache.txt

@@ -107,6 +107,16 @@ pending
 - greedy 匹配数量和总 cost
 - MCMF 匹配数量和总 cost
 - 实际成功回写的 assignment 数量和接驾 cost
+- 候选边生成耗时和匹配耗时
+
+同时，回放器会为每个 request 累计一条 `DispatchReplayRequestOutcome`，记录：
+
+- 参与过多少轮 pending batch。
+- 有候选边的 batch 次数。
+- 累计候选边数量。
+- 是否被派单、是否完成。
+- 实际派单时间、到达 pickup 时间、完成时间。
+- 派单等待时间和接驾成本。
 
 ## 5. 同一时间点事件顺序
 
@@ -180,7 +190,9 @@ pending
 7. 按固定 `trip_duration_seconds` 生成 `trip_complete` 事件。
 8. 订单完成时把 taxi 位置更新到 `dropoff_location`，再释放为 `free`。
 9. 通过 `run_report` 返回 `DispatchReplayReport`，包含总指标和每轮 batch 日志。
-10. 通过 `format_dispatch_replay_report` 输出可展示的回放摘要。
+10. 通过 `run_report` 返回 per-request outcome，供 `k_sweep` 做 hot/cold 分组报告。
+11. 通过 `format_dispatch_replay_report` 输出可展示的回放摘要。
+12. 可通过 CSV formatter 输出 batch 日志和 request outcome 明细。
 
 当前测试覆盖：
 
@@ -188,6 +200,8 @@ pending
 - 第一单完成后，taxi 虚空移动到终点，并继续接第二单。
 - 无候选边时 request 保持未服务。
 - 每轮 batch 日志、候选边统计、greedy/MCMF 对比指标和平均接驾 cost。
+- request outcome 明细，包括有候选边未分配、已分配、已完成、无候选边等情况。
+- scan / indexed 候选生成路径在测试样本上的指标一致性。
 
 ## 9. 当前输出指标
 
@@ -204,6 +218,18 @@ pending
 - 有候选边 / 无候选边的 request 累计数
 - greedy 和 MCMF 的匹配数量 / 总 cost 对比
 - 实际回写的接驾总 cost 和平均 cost
+- 平均派单等待时间
+- 候选边生成耗时
+- 匹配耗时
+- replay 总耗时
+- per-request 候选边覆盖、派单、完成、等待和接驾 cost
+
+`replay_csv_demo` 可额外输出：
+
+```text
+--batch-log-csv PATH
+--request-outcome-csv PATH
+```
 
 第一版回放器已经证明流程闭环：
 

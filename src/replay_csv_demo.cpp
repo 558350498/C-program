@@ -4,8 +4,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -23,7 +26,10 @@ struct CliOptions {
   double seconds_per_distance_unit = 100000.0;
   std::size_t max_edges_per_request = 0;
   bool same_tile_only = false;
+  bool use_indexed_candidate_edges = false;
   bool include_batch_logs = false;
+  std::string batch_log_csv_path;
+  std::string request_outcome_csv_path;
   bool taxi_system_logging_enabled = false;
 };
 
@@ -42,7 +48,10 @@ void print_usage(const char *program) {
       << "  --seconds-per-distance-unit N   pickup cost scale, default 100000\n"
       << "  --max-edges-per-request N       candidate top-k per request, default 0\n"
       << "  --same-tile-only                only generate same-tile candidates\n"
+      << "  --indexed-candidates            generate candidates with KD-Tree index\n"
       << "  --batch-logs                    include per-batch logs in output\n"
+      << "  --batch-log-csv PATH            write per-batch logs as CSV\n"
+      << "  --request-outcome-csv PATH      write per-request replay outcomes as CSV\n"
       << "  --taxi-logs                     enable TaxiSystem state logs\n"
       << "  --help                          show this help\n";
 }
@@ -120,8 +129,14 @@ CliOptions parse_cli(int argc, char **argv) {
           parse_size_value(require_value(index, argc, argv), arg);
     } else if (arg == "--same-tile-only") {
       options.same_tile_only = true;
+    } else if (arg == "--indexed-candidates") {
+      options.use_indexed_candidate_edges = true;
     } else if (arg == "--batch-logs") {
       options.include_batch_logs = true;
+    } else if (arg == "--batch-log-csv") {
+      options.batch_log_csv_path = require_value(index, argc, argv);
+    } else if (arg == "--request-outcome-csv") {
+      options.request_outcome_csv_path = require_value(index, argc, argv);
     } else if (arg == "--taxi-logs") {
       options.taxi_system_logging_enabled = true;
     } else {
@@ -158,6 +173,54 @@ void print_errors(const std::vector<std::string> &errors,
   }
   if (errors.size() > limit) {
     std::cerr << "  ... " << (errors.size() - limit) << " more\n";
+  }
+}
+
+void write_batch_log_csv(const DispatchReplayReport &report,
+                         const std::string &path_text) {
+  if (path_text.empty()) {
+    return;
+  }
+
+  const std::filesystem::path output_path(path_text);
+  const std::filesystem::path parent_path = output_path.parent_path();
+  if (!parent_path.empty()) {
+    std::filesystem::create_directories(parent_path);
+  }
+
+  std::ofstream output(output_path);
+  if (!output) {
+    throw std::runtime_error("failed to open batch log CSV: " + path_text);
+  }
+
+  output << format_dispatch_replay_batch_logs_csv(report);
+  if (!output) {
+    throw std::runtime_error("failed to write batch log CSV: " + path_text);
+  }
+}
+
+void write_request_outcome_csv(const DispatchReplayReport &report,
+                               const std::string &path_text) {
+  if (path_text.empty()) {
+    return;
+  }
+
+  const std::filesystem::path output_path(path_text);
+  const std::filesystem::path parent_path = output_path.parent_path();
+  if (!parent_path.empty()) {
+    std::filesystem::create_directories(parent_path);
+  }
+
+  std::ofstream output(output_path);
+  if (!output) {
+    throw std::runtime_error("failed to open request outcome CSV: " +
+                             path_text);
+  }
+
+  output << format_dispatch_replay_request_outcomes_csv(report);
+  if (!output) {
+    throw std::runtime_error("failed to write request outcome CSV: " +
+                             path_text);
   }
 }
 
@@ -207,6 +270,7 @@ int main(int argc, char **argv) {
     DispatchReplayOptions replay_options(
         cli_options.start_time, end_time, cli_options.batch_interval_seconds,
         cli_options.trip_duration_seconds, candidate_options,
+        cli_options.use_indexed_candidate_edges,
         cli_options.taxi_system_logging_enabled);
 
     std::cout << "Replay CSV demo\n"
@@ -227,13 +291,25 @@ int main(int argc, char **argv) {
               << candidate_options.max_edges_per_request
               << " same_tile_only="
               << (candidate_options.same_tile_only ? "true" : "false")
+              << " candidate_generation="
+              << (replay_options.use_indexed_candidate_edges ? "indexed"
+                                                             : "scan")
               << '\n';
 
     DispatchReplaySimulator simulator;
     const DispatchReplayReport report = simulator.run_report(
         driver_result.drivers, request_result.requests, replay_options);
+    write_batch_log_csv(report, cli_options.batch_log_csv_path);
+    write_request_outcome_csv(report, cli_options.request_outcome_csv_path);
     std::cout << format_dispatch_replay_report(report,
                                                cli_options.include_batch_logs);
+    if (!cli_options.batch_log_csv_path.empty()) {
+      std::cout << "batch_log_csv=" << cli_options.batch_log_csv_path << '\n';
+    }
+    if (!cli_options.request_outcome_csv_path.empty()) {
+      std::cout << "request_outcome_csv="
+                << cli_options.request_outcome_csv_path << '\n';
+    }
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "error: " << error.what() << '\n';

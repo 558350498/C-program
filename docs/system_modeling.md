@@ -26,7 +26,8 @@
 4. 离线回放层
    - `DispatchReplaySimulator` 负责事件时间线。
    - replay 使用 MCMF 结果正式回写，greedy 用作对比指标。
-   - replay 输出总指标和每轮 batch 日志。
+   - replay 输出总指标、每轮 batch 日志和 per-request outcome。
+   - `k_sweep` 基于 replay outcome 做每个实验 row 的 hot/cold dropoff 分组报告。
 
 ## 2. 数据流
 
@@ -42,7 +43,8 @@ Kaggle NYC.csv
   -> candidate edges
   -> greedy / MCMF
   -> TaxiSystem::apply_assignment
-  -> replay report
+  -> replay report / request outcomes
+  -> k_sweep hot/cold grouped metrics
 ```
 
 边界原则：
@@ -50,6 +52,7 @@ Kaggle NYC.csv
 - Go 处理变化频繁的 raw schema 和清洗策略。
 - C++ 处理稳定的调度状态机、候选边、匹配算法和回放指标。
 - 两边通过文件交互，不用 cgo，不传 C++ 对象或 STL 容器。
+- Go 可以继续补充业务估算列，但不同策略下的服务效果以 C++ replay outcome 为事实源。
 
 ## 3. 虚空行走模型
 
@@ -96,6 +99,16 @@ taxi_id -> request_id, pickup_cost
 
 indexed 路径暂不替换默认 replay，先用于验证空间索引抽象和后续性能优化。
 
+replay outcome 记录每个 request 在当前策略下的服务结果：
+
+- 是否进入过 pending batch。
+- 候选边覆盖次数和候选边数量。
+- 是否成功派单。
+- 是否完成。
+- 实际接驾成本和派单等待时间。
+
+这些字段用于把全局 replay 指标拆成 per-row 分组指标，例如 hot dropoff / cold dropoff 的完成率、候选边覆盖率和接驾成本。
+
 MCMF 第一版：
 
 ```text
@@ -137,6 +150,30 @@ tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
 - 空间索引返回轻量 `id + distance_sq` 查询结果。
 - taxi、request、heat 等业务字段放在外部 side table。
 - 后续热区统计和格点地图不应直接把业务对象塞进 KD-Tree node。
+
+当前热区原型使用 pickup tile 频次作为轻量 heat side table：
+
+```text
+dropoff_hotspot = pickup_heat(dropoff_tile) / max_pickup_heat
+cold_dropoff = 1 - dropoff_hotspot
+```
+
+`k_sweep` 对每个策略 row 输出 hot/cold dropoff 分组效果：
+
+- 请求数
+- 候选边覆盖率
+- 派单率
+- 完成率
+- 平均订单距离
+- 平均接驾成本
+
+第一版机会成本只做报表估算，不写入 dispatch 权重：
+
+```text
+opportunity_adjustment =
+  cold_dropoff_penalty * cold_dropoff
+  - hot_dropoff_discount * dropoff_hotspot
+```
 
 ## 6. 当前不建议做
 

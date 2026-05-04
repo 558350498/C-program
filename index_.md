@@ -120,9 +120,17 @@
 - `DispatchReplaySimulator::run`
 - `DispatchReplaySimulator::run_report`
 - `format_dispatch_replay_report`
+- `format_dispatch_replay_batch_logs_csv`
+- `format_dispatch_replay_request_outcomes_csv`
 - `assignment_rate`
 - `completion_rate`
 - `average_applied_pickup_cost`
+
+核心输出：
+
+- `DispatchReplayMetrics`：总请求、派单、完成、候选边、耗时等汇总指标。
+- `DispatchReplayBatchLog`：每轮 batch 的候选边、匹配和耗时日志。
+- `DispatchReplayRequestOutcome`：每个 request 在 replay 中的候选边覆盖、派单、完成、接驾成本和等待时间。
 
 位置：
 
@@ -139,6 +147,8 @@
 - `replay_csv_demo`：读取 normalized CSV，运行一次 replay 并输出 summary。
 - `k_sweep`：对候选集规模 `max_edges_per_request` 和候选半径做批量扫描，输出 CSV。
 - `go_experiments`：Go 实验编排层，调用 `k_sweep` 并补充供需比、订单里程收入、接驾成本、热点调价和粗略净收入估算。
+- `go_batch_experiments`：按样本规模、候选生成模式、半径和 k 值批量跑预处理与实验，输出总表。
+- `go_experiment_summary`：读取实验总表，输出紧凑对照和推荐配置。
 
 位置：
 
@@ -146,6 +156,8 @@
 - `src/k_sweep.cpp`
 - `tools/go_experiments/main.go`
 - `tools/go_experiments/go.mod`
+- `tools/go_batch_experiments/main.go`
+- `tools/go_experiment_summary/main.go`
 
 常用输出字段：
 
@@ -153,6 +165,14 @@
 - `completion_rate`
 - `candidate_edges`
 - `avg_pickup_cost`
+- `candidate_generation_ms`
+- `matching_ms`
+- `replay_ms`
+- `hot_dropoff_completion_rate`
+- `cold_dropoff_completion_rate`
+- `hot_dropoff_candidate_coverage_rate`
+- `cold_dropoff_candidate_coverage_rate`
+- `opportunity_adjustment_avg`
 - `supply_demand_ratio`
 - `estimated_net_revenue`
 - `pricing_mode`
@@ -249,13 +269,13 @@ go run . `
 Replay CLI：
 
 ```powershell
-build-mingw\replay_csv_demo.exe
+build-mingw\replay_csv_demo.exe --indexed-candidates --batch-log-csv build-mingw\batch_logs.csv --request-outcome-csv build-mingw\request_outcomes.csv
 ```
 
 候选集规模扫描：
 
 ```powershell
-build-mingw\k_sweep.exe --radii 0.01,0.03,0.05 --k-values 1,2,5,unlimited
+build-mingw\k_sweep.exe --radii 0.01,0.03,0.05 --k-values 1,2,5,unlimited --indexed-candidates
 ```
 
 Go 实验 runner：
@@ -263,4 +283,14 @@ Go 实验 runner：
 ```powershell
 cd tools\go_experiments
 go run .
+```
+
+批量性能 / 分组实验：
+
+```powershell
+cd tools\go_batch_experiments
+go run . -limits 1000,5000,20000 -modes scan,indexed -radii 0.01,0.03,0.05 -k-values 1,2,5,unlimited
+
+cd ..\go_experiment_summary
+go run . -input ..\..\build-local\perf-sweeps\summary.csv
 ```
