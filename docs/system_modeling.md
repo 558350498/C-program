@@ -1,263 +1,162 @@
 # 出租车调度系统建模笔记
 
-## 1. 当前项目骨架
+这份文档只记录稳定设计边界和建模原则。函数位置看 `index_.md`，事件推进看 `docs/timeline_model.md`，当前任务看 `plan/dispatch_next_steps.md`。
 
-当前项目已经完成了第一轮解耦，核心结构可以按 3 层理解：
+## 1. 当前架构边界
 
-- `TaxiSystem`
-  - 负责车辆状态管理、参数校验、索引同步、调用派单策略
-- `ISpatialIndex`
-  - 抽象空间索引，默认实现是 `KdTreeSpatialIndex`
-- `IDispatchStrategy`
-  - 抽象派单策略，默认实现是 `NearestFreeTaxiStrategy`
+项目分成四层：
 
-当前代码结构：
+1. 数据预处理层
+   - Go 读取 Kaggle raw CSV。
+   - Go 负责字段适配、时间解析、坐标过滤、tile 映射、合成司机。
+   - 输出标准化 `requests.csv` / `drivers.csv`。
 
-- `include/`
-  - 对外类型、接口、系统入口头文件
-- `src/`
-  - 领域类型实现、KD-Tree 空间索引实现、派单策略实现、系统实现
-- `tests/`
-  - 空间索引测试和系统流程测试
-- `plan/`
-  - 后续阶段计划
+2. 标准化输入层
+   - C++ 只读取项目内部标准化 CSV。
+   - `dispatch_replay_io` 把 CSV 转成 `PassengerRequest` / `DriverSnapshot`。
+   - C++ 不依赖 Kaggle 原始字段名。
 
-当前骨架适合继续往“离线仿真 + 可替换匹配策略”方向演进，不适合再把复杂逻辑继续堆回 `TaxiSystem` 或单个头文件。
+3. 调度核心层
+   - `TaxiSystem` 维护 taxi 状态、空间索引同步和 request 生命周期回写。
+   - `RequestContext` 管单个 request 状态。
+   - `dispatch_batch` 生成候选边和贪心 baseline。
+   - `McmfBatchStrategy` 只在候选边集合上做匹配。
+   - `ISpatialIndex` 只负责空间查询，业务数据通过 side table 挂载。
 
-## 2. 数据集接入思路
+4. 离线回放层
+   - `DispatchReplaySimulator` 负责事件时间线。
+   - replay 使用 MCMF 结果正式回写，greedy 用作对比指标。
+   - replay 输出总指标和每轮 batch 日志。
 
-Kaggle 的 CSV 数据不应直接喂给调度器，应该先做一层标准化。
+## 2. 数据流
 
-建议先抽象出内部统一对象：
+当前主线数据流：
 
-- `PassengerRequest`
-  - `request_id`
-  - `request_time`
-  - `pickup_lon`
-  - `pickup_lat`
-  - `dropoff_lon`
-  - `dropoff_lat`
-  - `pickup_tile`
-  - `dropoff_tile`
-- `TripRecord`
-  - `trip_id`
-  - `taxi_id`
-  - `pickup_time`
-  - `dropoff_time`
-  - `pickup_tile`
-  - `dropoff_tile`
-- `DriverState`
-  - `taxi_id`
-  - `current_tile`
-  - `status`
-  - `available_time`
+```text
+Kaggle NYC.csv
+  -> Go preprocess
+  -> data/normalized/requests.csv
+  -> data/normalized/drivers.csv
+  -> C++ dispatch_replay_io
+  -> DispatchReplaySimulator
+  -> candidate edges
+  -> greedy / MCMF
+  -> TaxiSystem::apply_assignment
+  -> replay report
+```
 
-建议的数据流：
+边界原则：
 
-1. CSV 解析器负责读取原始字段
-2. 预处理层负责清洗时间、坐标、缺失值
-3. 地图层负责经纬度转 tile
-4. 调度层只接收标准化后的请求、车辆和事件
+- Go 处理变化频繁的 raw schema 和清洗策略。
+- C++ 处理稳定的调度状态机、候选边、匹配算法和回放指标。
+- 两边通过文件交互，不用 cgo，不传 C++ 对象或 STL 容器。
 
-这样以后即使换数据集，也只需要改解析和预处理，不需要改调度器。
+## 3. 虚空行走模型
 
-## 3. 纽约地图与 tile 建模
+当前阶段不模拟真实道路。
 
-项目下一阶段不建议直接接真实路网，先做 tile 离散化更稳。
+规则：
 
-推荐做法：
+- `Point(x, y)` 直接使用经纬度或二维坐标。
+- 候选边 `pickup_cost` 表示接驾耗时。
+- taxi 被派单后进入 `occupy`。
+- 到达 pickup event 后 request 进入 `serving`。
+- trip complete event 时，taxi 位置直接更新到 `dropoff_location`。
+- 未匹配 request 留到后续 batch。
 
-- 先用固定网格或简单 tile 编号
-- 每个乘客请求落到一个 `pickup_tile`
-- 每辆空闲车落到一个 `current_tile`
-- 匹配时先按 tile 做候选筛选，再做距离或流网络优化
+这个模型的目的不是还原真实交通，而是验证：
 
-tile 的作用不是替代 KD-Tree，而是做第一层粗筛：
-
-`tile bucket -> 候选车辆集合 -> 细粒度距离计算 / 匹配策略`
-
-这样可以显著减少候选边数量，避免把全纽约所有车和单直接连成稠密大图。
-
-## 4. 事件驱动仿真
-
-下一阶段系统更自然的形态是事件驱动仿真，而不是静态查询。
-
-核心事件：
-
-- 新请求到达
-- 车辆上线
-- 车辆下线
-- 车辆完成订单重新空闲
-- 车辆位置更新
-
-建议做统一时间轴，按事件时间顺序推进系统状态。
-
-如果用 Kaggle trip 数据做离线回放，可以先把：
-
-- `pickup_time` 视为请求到达事件
-- `dropoff_time` 视为订单完成事件
-
-第一版不强求真实历史车流，只要先让系统能基于订单流回放即可。
-
-## 5. 二分图匹配与最小费用建模
-
-### 5.1 基本图结构
-
-对于某个匹配批次，构造流网络：
-
-- 超级源点 `S`
-- 超级汇点 `T`
-- 空闲车节点集合 `D`
-- 请求节点集合 `R`
-
-连边方式：
-
-- `S -> driver_i`
-  - 容量 `1`
-  - 费用 `0`
-- `driver_i -> request_j`
-  - 容量 `1`
-  - 费用 `cost(i, j)`
-- `request_j -> T`
-  - 容量 `1`
-  - 费用 `0`
-
-如果只保留这些边，那么模型的含义是：
-
-- 尽量在当前候选边集合内做最大匹配
-- 在所有最大匹配中最小化总代价
-
-### 5.2 不要全图连边
-
-不建议把所有空闲车和所有请求直接连边。
-
-正确做法：
-
-- 每个请求只连接本 tile 及周边若干 tile 中的车辆
-- 或每个请求只连接 top-k 最近车辆
-
-这样构造出的图是稀疏二分图，计算和业务解释都更合理。
-
-### 5.3 第一版费用定义
-
-第一版最小费用建议直接定义为接驾代价：
-
-`cost(i, j) = pickup_eta_seconds(i, j)`
-
-如果暂时没有真实 ETA，可以退化为：
-
-- 欧氏距离
-- 曼哈顿距离
-- tile 距离乘平均耗时
-
-其中最推荐统一成“秒”作为费用单位，因为后面最好直接用整数费用跑最小费用流。
-
-### 5.4 允许“不匹配”的建模
-
-如果系统允许本轮不服务某些请求，就不能只做“最大匹配”。
-
-建议把“不服务请求”也看成一种选择，并赋予惩罚。
-
-常见处理方式：
-
-- 为每个请求引入一个“未服务”选择
-- 代价为 `penalty_unserved(j)`
-
-等价理解：
-
-- 给请求分配某辆车，代价是 `cost(i, j)`
-- 本轮不匹配该请求，代价是 `penalty_unserved(j)`
-
-这样算法自然会比较：
-
-- 接单是否值得
-- 如果接驾代价太大，是否应该把这单留到下一轮
-
-第一版建议先用固定常数：
-
-`penalty_unserved(j) = C`
-
-例如：
-
-- `C = 600`
-- `C = 900`
-
-单位按秒理解即可，表示如果接驾时间过大，则不如暂缓该请求。
-
-### 5.5 考虑请求等待时间
-
-如果系统按 batch 处理请求，那么老请求应当逐渐获得更高优先级。
-
-建议第二版费用定义：
-
-`cost(i, j) = pickup_eta_seconds(i, j) - lambda * waited_seconds(j)`
-
-含义：
-
-- 接驾越快越好
-- 等得越久的请求，越应该被优先服务
-
-如果不希望出现负费用，可以整体平移为非负：
-
-`cost(i, j) = pickup_eta_seconds(i, j) + M - lambda * waited_seconds(j)`
-
-其中 `M` 取足够大的常数。
-
-### 5.6 推荐的阶段化成本模型
-
-建议分阶段推进：
-
-第一版：
-
-- `cost(i, j) = pickup_eta_seconds(i, j)`
-- 目标是先跑通、先可解释
-
-第二版：
-
-- `cost(i, j) = pickup_eta_seconds(i, j) - lambda * waited_seconds(j)`
-- 让老请求不会长期饿死
-
-第三版：
-
-- 保留等待时间项
-- 再加入“不匹配惩罚”
-- 允许部分请求留待下一轮处理
-
-进一步版本才考虑：
-
-- 订单收益
-- 热点区域回流价值
-- 司机重定位收益
-
-这些都不建议在当前阶段提前引入。
-
-## 6. 推荐的系统推进顺序
-
-建议按这个顺序推进：
-
-1. 定义标准化数据对象
-2. 实现 CSV 预处理和 tile 映射
-3. 做事件驱动回放器
-4. 做 tile 级别状态容器
-5. 先跑最近车或局部贪心 baseline
-6. 再加最小费用最大流策略做对比
-
-这样可以保证每一层都能独立验证，而不是把数据、地图、仿真、优化算法同时揉在一起。
-
-## 7. 当前阶段不建议做的事
-
-- 不要先做全纽约全局完全二分图
-- 不要先接真实道路最短路
-- 不要先引入 Redis / WebSocket 参与主调度流程
-- 不要先追求并发和线程安全
-- 不要先把历史数据所有字段都耦合到核心模型里
-
-当前阶段最重要的是让系统的：
-
-- 数据流
-- 状态流
+- request 生命周期闭环
+- taxi 占用和释放
 - 候选边生成
-- 匹配策略接口
-- 结果日志和指标
+- greedy / MCMF 对比
+- replay 指标输出
 
-都足够清晰、可解释、可替换。
+## 4. 候选边和匹配建模
+
+候选边含义：
+
+```text
+taxi_id -> request_id, pickup_cost
+```
+
+生成约束：
+
+- 只使用可用司机。
+- 只使用已到达 batch 时间的 request。
+- 支持半径筛选。
+- 支持 `same_tile_only` 粗筛。
+- 支持每个 request 的 top-k 限制。
+- 候选边会规范化：过滤非法边，并对重复 `taxi_id/request_id` 保留最低 cost。
+
+当前有两条候选边生成路径：
+
+- 全量扫描路径：作为默认 replay 路径和 baseline。
+- indexed 对照路径：使用 KD-Tree `radius_query` 查询候选司机 id，再通过 `taxi_id -> DriverSnapshot` side table 取业务数据。
+
+indexed 路径暂不替换默认 replay，先用于验证空间索引抽象和后续性能优化。
+
+MCMF 第一版：
+
+```text
+source -> taxi -> request -> sink
+```
+
+- 每辆 taxi 容量 1。
+- 每个 request 容量 1。
+- taxi-request 边费用是 `pickup_cost`。
+- 先最大化匹配数量，再最小化总代价。
+
+暂不建模：
+
+- 未服务惩罚
+- 等待时间修正
+- 真实道路 ETA
+- 司机收益
+- 重定位收益
+
+## 5. Tile 建模
+
+当前 tile 是简单固定网格，用作粗筛。
+
+定位：
+
+- tile 不是为了替代 KD-Tree。
+- tile 是第一层候选集合压缩。
+- KD-Tree 或距离计算可作为细筛。
+
+推荐方向：
+
+```text
+tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
+```
+
+空间索引抽象原则：
+
+- KD-Tree、grid index、tile bucket 都应隐藏在 `ISpatialIndex` 或候选生成器之后。
+- 空间索引返回轻量 `id + distance_sq` 查询结果。
+- taxi、request、heat 等业务字段放在外部 side table。
+- 后续热区统计和格点地图不应直接把业务对象塞进 KD-Tree node。
+
+## 6. 当前不建议做
+
+当前阶段不要做：
+
+- 全纽约全量完全二分图。
+- 真实道路最短路。
+- API / Socket / WebSocket 在线服务。
+- 多线程事件处理。
+- Redis 或外部数据库。
+- cgo / C++ dll。
+- 把 Kaggle raw 字段耦合进 C++ 核心。
+
+这些都可以以后做，但不应该阻塞当前离线 replay 主线。
+
+## 7. 设计原则
+
+- 先文件边界，后服务边界。
+- 先小样本闭环，后大数据规模。
+- 先可解释指标，后复杂优化。
+- 变化频繁的 schema 放 Go。
+- 稳定的状态机和算法放 C++。
+- 策略只输出 `Assignment`，状态回写统一走 `TaxiSystem`。
