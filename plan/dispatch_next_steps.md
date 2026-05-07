@@ -43,6 +43,8 @@
 - batch CSV 已在 1000 单样本上输出，1 行 header + 240 轮 batch 记录。
 - replay / k_sweep 已补充候选边生成耗时、匹配耗时和总 replay 耗时。
 - 1000 单样本下已做 scan / indexed 初步性能对照：当前 indexed 因每轮重建 KD-Tree，在小样本下候选生成明显慢于全量扫描。
+- 2026-05-07 本机大样本性能对照已跑通默认矩阵：`limits=1000,5000,20000`、`modes=scan,indexed`、`radii=0.01,0.03,0.05`、`k=1,2,5,unlimited`，结果位于 `build-local/perf-sweeps/summary.csv`。需要注明：在 `window-seconds=86400` 下，`sample_limit=20000` 实际只取得 7162 条有效请求，因此这一档应理解为“一天窗口内可用最大样本”，不是完整 20000 单。
+- 本机性能对照结论：scan / indexed 指标一致，但 indexed 当前在所有样本档都慢于 scan。主要瓶颈不是 KD-Tree 查询本身，而是 indexed 候选生成路径每轮 batch 都重新构造整棵司机 KD-Tree；KD-Tree 内部已有替罪羊式局部重建机制，但没有跨 batch 复用索引。
 - 已新增批量性能 runner：`tools/go_batch_experiments`，可按 limit 阶梯自动预处理并合并 scan / indexed 实验 CSV。
 - Go 实验 runner 已补充轻量 tile 热区统计：pickup/dropoff 热度均值、冷区分数、热区/冷区请求数和比例。
 - 已新增实验结果汇总工具：`tools/go_experiment_summary`，用于从总 CSV 中输出紧凑对照和推荐配置。
@@ -204,6 +206,7 @@ NYC.csv -> Go preprocess -> normalized CSV -> replay_csv_demo -> report
 - 每轮平均 candidate edges。
 - 运行大样本分级性能对照：1000 / 5000 / 20000 单，观察 scan 和 indexed 的分界点。
 - 对照大样本下 hot/cold dropoff 的完成率、候选边覆盖率和接驾成本差异。
+- 优化 indexed 候选生成：不要在每轮 batch 内临时重建完整 KD-Tree；优先考虑在 replay 层维护跨 batch 的 free-driver spatial index，并在 assignment / trip_complete / taxi position update 时做增量 erase / upsert。树内部继续使用替罪羊式延迟重建，避免每轮全量 rebuild。
 
 已补充：
 
