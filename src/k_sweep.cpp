@@ -1,11 +1,13 @@
 #include "dispatch_replay.h"
 #include "dispatch_replay_io.h"
+#include "tile_grid_stats.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -28,6 +30,7 @@ struct KValue {
 struct CliOptions {
   std::string requests_path = "data/normalized/requests.csv";
   std::string drivers_path = "data/normalized/drivers.csv";
+  std::string tile_stats_csv_path;
   TimeSeconds start_time = 0;
   TimeSeconds end_time = 0;
   bool end_time_set = false;
@@ -42,13 +45,6 @@ struct CliOptions {
   bool use_indexed_candidate_edges = false;
   double cold_dropoff_penalty = 1.0;
   double hot_dropoff_discount = 1.0;
-};
-
-struct HotspotSideTable {
-  std::unordered_map<TileId, std::size_t> pickup_heat_by_tile;
-  std::size_t max_pickup_heat;
-
-  HotspotSideTable() : pickup_heat_by_tile(), max_pickup_heat(1) {}
 };
 
 struct HotColdGroup {
@@ -84,6 +80,7 @@ void print_usage(const char *program) {
       << "Options:\n"
       << "  --requests PATH                 normalized requests.csv path\n"
       << "  --drivers PATH                  normalized drivers.csv path\n"
+      << "  --tile-stats-csv PATH           write tile/grid side-table CSV\n"
       << "  --start-time SECONDS            replay start time, default 0\n"
       << "  --end-time SECONDS              replay end time, default auto\n"
       << "  --batch-interval SECONDS        batch interval, default 30\n"
@@ -202,6 +199,8 @@ CliOptions parse_cli(int argc, char **argv) {
       options.requests_path = require_value(index, argc, argv);
     } else if (arg == "--drivers") {
       options.drivers_path = require_value(index, argc, argv);
+    } else if (arg == "--tile-stats-csv") {
+      options.tile_stats_csv_path = require_value(index, argc, argv);
     } else if (arg == "--start-time") {
       options.start_time =
           parse_time_value(require_value(index, argc, argv), arg);
@@ -280,28 +279,6 @@ TimeSeconds infer_end_time(const std::vector<PassengerRequest> &requests,
          options.trip_duration_seconds;
 }
 
-HotspotSideTable
-build_hotspot_side_table(const std::vector<PassengerRequest> &requests) {
-  HotspotSideTable table;
-  for (const auto &request : requests) {
-    const std::size_t heat = ++table.pickup_heat_by_tile[request.pickup_tile];
-    table.max_pickup_heat = std::max(table.max_pickup_heat, heat);
-  }
-  return table;
-}
-
-double normalized_heat(const HotspotSideTable &table, TileId tile) {
-  if (table.max_pickup_heat == 0) {
-    return 0.0;
-  }
-  const auto heat_it = table.pickup_heat_by_tile.find(tile);
-  if (heat_it == table.pickup_heat_by_tile.end()) {
-    return 0.0;
-  }
-  return static_cast<double>(heat_it->second) /
-         static_cast<double>(table.max_pickup_heat);
-}
-
 double trip_distance(const PassengerRequest &request) {
   return std::sqrt(dist_sq(request.pickup_location, request.dropoff_location));
 }
@@ -351,7 +328,7 @@ void add_group_request(HotColdGroup &group, const PassengerRequest &request,
 
 HotColdReport build_hot_cold_report(
     const std::vector<PassengerRequest> &requests,
-    const DispatchReplayReport &replay_report, const HotspotSideTable &hotspot,
+    const DispatchReplayReport &replay_report, const TileGridStats &tile_stats,
     double cold_dropoff_penalty, double hot_dropoff_discount) {
   std::unordered_map<int, const DispatchReplayRequestOutcome *> outcomes;
   outcomes.reserve(replay_report.request_outcomes.size());
@@ -361,12 +338,11 @@ HotColdReport build_hot_cold_report(
 
   HotColdReport report;
   for (const auto &request : requests) {
-    const double dropoff_hotspot =
-        normalized_heat(hotspot, request.dropoff_tile);
-    const double cold_dropoff = 1.0 - dropoff_hotspot;
+    const RequestTileFeatures features =
+        tile_stats.request_tile_features(request);
     const double opportunity_adjustment =
-        cold_dropoff_penalty * cold_dropoff -
-        hot_dropoff_discount * dropoff_hotspot;
+        cold_dropoff_penalty * features.cold_dropoff_score -
+        hot_dropoff_discount * features.dropoff_hotspot_score;
 
     report.opportunity_adjustment_total += opportunity_adjustment;
     ++report.opportunity_request_count;
@@ -374,11 +350,11 @@ HotColdReport build_hot_cold_report(
     const auto outcome_it = outcomes.find(request.request_id);
     const DispatchReplayRequestOutcome *outcome =
         outcome_it == outcomes.end() ? nullptr : outcome_it->second;
-    if (dropoff_hotspot >= hotspot_threshold) {
+    if (features.dropoff_hotspot_score >= hotspot_threshold) {
       add_group_request(report.hot_dropoff, request, outcome,
                         opportunity_adjustment);
     }
-    if (dropoff_hotspot <= coldspot_threshold) {
+    if (features.dropoff_hotspot_score <= coldspot_threshold) {
       add_group_request(report.cold_dropoff, request, outcome,
                         opportunity_adjustment);
     }
@@ -391,11 +367,13 @@ void print_csv_header() {
                "assigned,completed,unserved,assignment_rate,completion_rate,"
                "candidate_edges,"
                "requests_with_edges,requests_without_edges,"
-               "unique_requests_without_edges,greedy_assigned,"
-               "mcmf_assigned,greedy_cost,mcmf_cost,applied_pickup_cost,"
-               "avg_pickup_cost,assignment_wait_time,avg_assignment_wait,"
-               "candidate_generation_ms,matching_ms,replay_ms,"
-               "opportunity_adjustment_avg,"
+              "unique_requests_without_edges,greedy_assigned,"
+              "mcmf_assigned,greedy_cost,mcmf_cost,applied_pickup_cost,"
+              "avg_pickup_cost,assignment_wait_time,avg_assignment_wait,"
+              "candidate_generation_ms,matching_ms,greedy_matching_ms,"
+              "mcmf_matching_ms,assignment_application_ms,"
+              "batch_accounting_ms,replay_ms,"
+              "opportunity_adjustment_avg,"
                "hot_dropoff_requests,hot_dropoff_candidate_coverage_rate,"
                "hot_dropoff_assignment_rate,hot_dropoff_completion_rate,"
                "hot_dropoff_avg_trip_distance,hot_dropoff_avg_pickup_cost,"
@@ -431,8 +409,12 @@ void print_csv_row(double radius, const KValue &k, std::size_t driver_count,
             << ',' << metrics.wait_time_total << ','
             << average_assignment_wait_time(metrics) << ','
             << candidate_generation_time_ms(metrics) << ','
-            << matching_time_ms(metrics) << ',' << replay_time_ms(metrics)
-            << ','
+            << matching_time_ms(metrics) << ','
+            << greedy_matching_time_ms(metrics) << ','
+            << mcmf_matching_time_ms(metrics) << ','
+            << assignment_application_time_ms(metrics) << ','
+            << batch_accounting_time_ms(metrics) << ','
+            << replay_time_ms(metrics) << ','
             << average_double(hot_cold_report.opportunity_adjustment_total,
                               hot_cold_report.opportunity_request_count)
             << ',' << hot.requests << ','
@@ -450,6 +432,21 @@ void print_csv_row(double radius, const KValue &k, std::size_t driver_count,
             << average_pickup_cost(cold) << ','
             << average_double(cold.opportunity_adjustment_total, cold.requests)
             << '\n';
+}
+
+void write_tile_stats_csv(const std::string &path,
+                          const TileGridStats &tile_stats) {
+  if (path.empty()) {
+    return;
+  }
+  std::ofstream output(path);
+  if (!output) {
+    throw std::runtime_error("failed to open --tile-stats-csv path: " + path);
+  }
+  output << format_tile_grid_stats_csv(tile_stats);
+  if (!output) {
+    throw std::runtime_error("failed to write --tile-stats-csv path: " + path);
+  }
 }
 
 } // namespace
@@ -483,8 +480,9 @@ int main(int argc, char **argv) {
             : infer_end_time(request_result.requests, cli_options);
     const std::string candidate_generation =
         cli_options.use_indexed_candidate_edges ? "indexed" : "scan";
-    const HotspotSideTable hotspot =
-        build_hotspot_side_table(request_result.requests);
+    const TileGridStats tile_stats =
+        build_tile_grid_stats(request_result.requests, driver_result.drivers);
+    write_tile_stats_csv(cli_options.tile_stats_csv_path, tile_stats);
 
     DispatchReplaySimulator simulator;
     print_csv_header();
@@ -501,7 +499,7 @@ int main(int argc, char **argv) {
         const DispatchReplayReport report = simulator.run_report(
             driver_result.drivers, request_result.requests, replay_options);
         const HotColdReport hot_cold_report = build_hot_cold_report(
-            request_result.requests, report, hotspot,
+            request_result.requests, report, tile_stats,
             cli_options.cold_dropoff_penalty,
             cli_options.hot_dropoff_discount);
         print_csv_row(radius, k, driver_result.drivers.size(), report.metrics,

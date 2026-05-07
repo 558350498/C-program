@@ -206,6 +206,30 @@
 - `src/kd_tree_spatial_index.cpp`
 - `tests/kd_tree_spatial_index_test.cpp`
 
+### Tile / Grid Stats
+
+轻量 tile/grid side table，用于区域热度、冷区分数、初始可用司机数统计，以及 `k_sweep` 的 hot/cold dropoff 分组报告。
+
+核心类型：
+
+- `TileGridStats`
+- `TileGridStatsEntry`
+- `RequestTileFeatures`
+
+核心入口：
+
+- `build_tile_grid_stats`
+- `hotspot_score`
+- `cold_score`
+- `request_tile_features`
+- `format_tile_grid_stats_csv`
+
+位置：
+
+- `include/tile_grid_stats.h`
+- `src/tile_grid_stats.cpp`
+- `tests/tile_grid_stats_test.cpp`
+
 ### Dispatch Strategy
 
 单次派单策略抽象和最近空闲车策略。
@@ -269,14 +293,22 @@ go run . `
 Replay CLI：
 
 ```powershell
-build-mingw\replay_csv_demo.exe --indexed-candidates --batch-log-csv build-mingw\batch_logs.csv --request-outcome-csv build-mingw\request_outcomes.csv
+build-local\replay_csv_demo.exe --batch-log-csv build-local\batch_logs.csv --request-outcome-csv build-local\request_outcomes.csv
 ```
 
 候选集规模扫描：
 
 ```powershell
-build-mingw\k_sweep.exe --radii 0.01,0.03,0.05 --k-values 1,2,5,unlimited --indexed-candidates
+build-local\k_sweep.exe --radii 0.01,0.03,0.05 --k-values 1,2,5,10
 ```
+
+Tile/grid 明细导出：
+
+```powershell
+build-local\k_sweep.exe --radii 0.03 --k-values 1,2,5 --tile-stats-csv build-local\tile_stats.csv
+```
+
+`--indexed-candidates` 和 `k=unlimited` 主要用于对照和压力测试，不作为默认实验口径。
 
 Go 实验 runner：
 
@@ -289,7 +321,7 @@ go run .
 
 ```powershell
 cd tools\go_batch_experiments
-go run . -limits 1000,5000,20000 -modes scan,indexed -radii 0.01,0.03,0.05 -k-values 1,2,5,unlimited
+go run . -limits 1000,5000 -modes scan -radii 0.01,0.03,0.05 -k-values 1,2,5,10
 
 cd ..\go_experiment_summary
 go run . -input ..\..\build-local\perf-sweeps\summary.csv

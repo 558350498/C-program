@@ -127,6 +127,7 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
   }
 
   TaxiSystem system(nullptr, nullptr, options.taxi_system_logging_enabled);
+  KdTreeSpatialIndex free_driver_index;
   std::unordered_map<int, DriverSnapshot> drivers;
   for (const auto &driver : initial_drivers) {
     if (driver.taxi_id < 0) {
@@ -145,6 +146,11 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
                                  driver.location.coords[1])) {
         drivers[driver.taxi_id].status = TaxiStatus::free;
         drivers[driver.taxi_id].available_time = driver.available_time;
+        if (options.use_indexed_candidate_edges) {
+          free_driver_index.upsert(Point(driver.location.coords[0],
+                                         driver.location.coords[1],
+                                         driver.taxi_id));
+        }
       }
     }
   }
@@ -207,19 +213,25 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
       const auto candidate_result =
           options.use_indexed_candidate_edges
               ? generate_candidate_edges_indexed_with_stats(
-                    batch, options.candidate_options)
+                    batch, options.candidate_options, free_driver_index)
               : generate_candidate_edges_with_stats(batch,
                                                     options.candidate_options);
       const auto candidate_end = std::chrono::steady_clock::now();
       const auto &candidate_edges = candidate_result.edges;
-      const auto matching_start = std::chrono::steady_clock::now();
+      const auto greedy_start = std::chrono::steady_clock::now();
       const auto greedy_assignments = greedy_batch_assign(candidate_edges);
+      const auto greedy_end = std::chrono::steady_clock::now();
+      const auto mcmf_start = std::chrono::steady_clock::now();
       const auto mcmf_assignments = mcmf_strategy_.assign(candidate_edges);
-      const auto matching_end = std::chrono::steady_clock::now();
+      const auto mcmf_end = std::chrono::steady_clock::now();
       const long long candidate_generation_time =
           elapsed_microseconds(candidate_start, candidate_end);
+      const long long greedy_matching_time =
+          elapsed_microseconds(greedy_start, greedy_end);
+      const long long mcmf_matching_time =
+          elapsed_microseconds(mcmf_start, mcmf_end);
       const long long matching_time =
-          elapsed_microseconds(matching_start, matching_end);
+          greedy_matching_time + mcmf_matching_time;
       const int greedy_cost = sum_pickup_cost(greedy_assignments);
       const int mcmf_cost = sum_pickup_cost(mcmf_assignments);
 
@@ -227,6 +239,8 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
       metrics.candidate_generation_time_microseconds +=
           candidate_generation_time;
       metrics.matching_time_microseconds += matching_time;
+      metrics.greedy_matching_time_microseconds += greedy_matching_time;
+      metrics.mcmf_matching_time_microseconds += mcmf_matching_time;
       metrics.candidate_edges_total += candidate_result.stats.candidate_edges;
       metrics.requests_with_edges_total +=
           candidate_result.stats.requests_with_edges;
@@ -248,7 +262,10 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
       batch_log.candidate_generation_time_microseconds =
           candidate_generation_time;
       batch_log.matching_time_microseconds = matching_time;
+      batch_log.greedy_matching_time_microseconds = greedy_matching_time;
+      batch_log.mcmf_matching_time_microseconds = mcmf_matching_time;
 
+      const auto accounting_start = std::chrono::steady_clock::now();
       std::unordered_set<int> requests_with_edges;
       std::unordered_map<int, std::size_t> candidate_edges_by_request;
       requests_with_edges.reserve(candidate_edges.size());
@@ -274,7 +291,14 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
           requests_without_candidate_edges.insert(request.request_id);
         }
       }
+      const auto accounting_end = std::chrono::steady_clock::now();
+      const long long batch_accounting_time =
+          elapsed_microseconds(accounting_start, accounting_end);
+      metrics.batch_accounting_time_microseconds += batch_accounting_time;
+      batch_log.batch_accounting_time_microseconds = batch_accounting_time;
 
+      const auto assignment_application_start =
+          std::chrono::steady_clock::now();
       for (const auto &assignment : mcmf_assignments) {
         const auto context_it = request_contexts.find(assignment.request_id);
         const PassengerRequest *request =
@@ -289,6 +313,9 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
           continue;
         }
 
+        if (options.use_indexed_candidate_edges) {
+          free_driver_index.erase(assignment.taxi_id);
+        }
         driver_it->second.status = TaxiStatus::occupy;
         driver_it->second.available_time =
             event.time + assignment.pickup_cost + options.trip_duration_seconds;
@@ -322,6 +349,13 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
                                 ReplayEventType::trip_complete,
                                 assignment.request_id});
       }
+      const auto assignment_application_end = std::chrono::steady_clock::now();
+      const long long assignment_application_time = elapsed_microseconds(
+          assignment_application_start, assignment_application_end);
+      metrics.assignment_application_time_microseconds +=
+          assignment_application_time;
+      batch_log.assignment_application_time_microseconds =
+          assignment_application_time;
       report.batch_logs.push_back(batch_log);
       continue;
     }
@@ -353,6 +387,11 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
           driver_it->second.status = TaxiStatus::free;
           driver_it->second.available_time = event.time;
           driver_it->second.current_tile = request->dropoff_tile;
+          if (options.use_indexed_candidate_edges) {
+            free_driver_index.upsert(Point(request->dropoff_location.coords[0],
+                                           request->dropoff_location.coords[1],
+                                           *taxi_id));
+          }
         }
         ++metrics.completed_requests;
         const auto outcome_it = outcome_indices.find(event.request_id);
@@ -422,6 +461,26 @@ double matching_time_ms(const DispatchReplayMetrics &metrics) {
   return static_cast<double>(metrics.matching_time_microseconds) / 1000.0;
 }
 
+double greedy_matching_time_ms(const DispatchReplayMetrics &metrics) {
+  return static_cast<double>(metrics.greedy_matching_time_microseconds) /
+         1000.0;
+}
+
+double mcmf_matching_time_ms(const DispatchReplayMetrics &metrics) {
+  return static_cast<double>(metrics.mcmf_matching_time_microseconds) / 1000.0;
+}
+
+double assignment_application_time_ms(const DispatchReplayMetrics &metrics) {
+  return static_cast<double>(
+             metrics.assignment_application_time_microseconds) /
+         1000.0;
+}
+
+double batch_accounting_time_ms(const DispatchReplayMetrics &metrics) {
+  return static_cast<double>(metrics.batch_accounting_time_microseconds) /
+         1000.0;
+}
+
 double replay_time_ms(const DispatchReplayMetrics &metrics) {
   return static_cast<double>(metrics.replay_time_microseconds) / 1000.0;
 }
@@ -457,6 +516,11 @@ std::string format_dispatch_replay_report(const DispatchReplayReport &report,
   stream << "timing candidate_generation_ms="
          << candidate_generation_time_ms(metrics)
          << " matching_ms=" << matching_time_ms(metrics)
+         << " greedy_matching_ms=" << greedy_matching_time_ms(metrics)
+         << " mcmf_matching_ms=" << mcmf_matching_time_ms(metrics)
+         << " assignment_application_ms="
+         << assignment_application_time_ms(metrics)
+         << " batch_accounting_ms=" << batch_accounting_time_ms(metrics)
          << " replay_ms=" << replay_time_ms(metrics) << '\n';
 
   if (!include_batch_logs || report.batch_logs.empty()) {
@@ -476,7 +540,14 @@ std::string format_dispatch_replay_report(const DispatchReplayReport &report,
            << log.applied_pickup_cost
            << " candidate_generation_us="
            << log.candidate_generation_time_microseconds
-           << " matching_us=" << log.matching_time_microseconds << '\n';
+           << " matching_us=" << log.matching_time_microseconds
+           << " greedy_matching_us="
+           << log.greedy_matching_time_microseconds
+           << " mcmf_matching_us=" << log.mcmf_matching_time_microseconds
+           << " assignment_application_us="
+           << log.assignment_application_time_microseconds
+           << " batch_accounting_us="
+           << log.batch_accounting_time_microseconds << '\n';
   }
 
   return stream.str();
@@ -488,7 +559,9 @@ format_dispatch_replay_batch_logs_csv(const DispatchReplayReport &report) {
   stream << "batch_time,available_drivers,pending_requests,candidate_edges,"
             "requests_with_edges,requests_without_edges,greedy_assigned,"
             "greedy_cost,mcmf_assigned,mcmf_cost,applied_assignments,"
-            "applied_pickup_cost,candidate_generation_us,matching_us\n";
+            "applied_pickup_cost,candidate_generation_us,matching_us,"
+            "greedy_matching_us,mcmf_matching_us,"
+            "assignment_application_us,batch_accounting_us\n";
 
   for (const auto &log : report.batch_logs) {
     stream << log.batch_time << ',' << log.available_drivers << ','
@@ -498,7 +571,11 @@ format_dispatch_replay_batch_logs_csv(const DispatchReplayReport &report) {
            << log.mcmf_assigned << ',' << log.mcmf_cost << ','
            << log.applied_assignments << ',' << log.applied_pickup_cost
            << ',' << log.candidate_generation_time_microseconds << ','
-           << log.matching_time_microseconds << '\n';
+           << log.matching_time_microseconds << ','
+           << log.greedy_matching_time_microseconds << ','
+           << log.mcmf_matching_time_microseconds << ','
+           << log.assignment_application_time_microseconds << ','
+           << log.batch_accounting_time_microseconds << '\n';
   }
 
   return stream.str();

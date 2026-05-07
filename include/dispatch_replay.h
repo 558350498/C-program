@@ -57,6 +57,10 @@ struct DispatchReplayMetrics {
   TimeSeconds wait_time_total;
   long long candidate_generation_time_microseconds;
   long long matching_time_microseconds;
+  long long greedy_matching_time_microseconds;
+  long long mcmf_matching_time_microseconds;
+  long long assignment_application_time_microseconds;
+  long long batch_accounting_time_microseconds;
   long long replay_time_microseconds;
 
   DispatchReplayMetrics()
@@ -67,7 +71,10 @@ struct DispatchReplayMetrics {
         mcmf_assigned_total(0), greedy_cost_total(0), mcmf_cost_total(0),
         applied_pickup_cost_total(0), wait_time_total(0),
         candidate_generation_time_microseconds(0),
-        matching_time_microseconds(0), replay_time_microseconds(0) {}
+        matching_time_microseconds(0), greedy_matching_time_microseconds(0),
+        mcmf_matching_time_microseconds(0),
+        assignment_application_time_microseconds(0),
+        batch_accounting_time_microseconds(0), replay_time_microseconds(0) {}
 };
 
 struct DispatchReplayBatchLog {
@@ -85,6 +92,10 @@ struct DispatchReplayBatchLog {
   int applied_pickup_cost;
   long long candidate_generation_time_microseconds;
   long long matching_time_microseconds;
+  long long greedy_matching_time_microseconds;
+  long long mcmf_matching_time_microseconds;
+  long long assignment_application_time_microseconds;
+  long long batch_accounting_time_microseconds;
 
   DispatchReplayBatchLog()
       : batch_time(0), available_drivers(0), pending_requests(0),
@@ -92,7 +103,10 @@ struct DispatchReplayBatchLog {
         greedy_assigned(0), mcmf_assigned(0), applied_assignments(0),
         greedy_cost(0), mcmf_cost(0), applied_pickup_cost(0),
         candidate_generation_time_microseconds(0),
-        matching_time_microseconds(0) {}
+        matching_time_microseconds(0), greedy_matching_time_microseconds(0),
+        mcmf_matching_time_microseconds(0),
+        assignment_application_time_microseconds(0),
+        batch_accounting_time_microseconds(0) {}
 };
 
 struct DispatchReplayRequestOutcome {
@@ -149,6 +163,10 @@ double average_applied_pickup_cost(const DispatchReplayMetrics &metrics);
 double average_assignment_wait_time(const DispatchReplayMetrics &metrics);
 double candidate_generation_time_ms(const DispatchReplayMetrics &metrics);
 double matching_time_ms(const DispatchReplayMetrics &metrics);
+double greedy_matching_time_ms(const DispatchReplayMetrics &metrics);
+double mcmf_matching_time_ms(const DispatchReplayMetrics &metrics);
+double assignment_application_time_ms(const DispatchReplayMetrics &metrics);
+double batch_accounting_time_ms(const DispatchReplayMetrics &metrics);
 double replay_time_ms(const DispatchReplayMetrics &metrics);
 std::string format_dispatch_replay_report(const DispatchReplayReport &report,
                                           bool include_batch_logs = true);

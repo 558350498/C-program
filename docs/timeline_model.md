@@ -108,6 +108,7 @@ pending
 - MCMF 匹配数量和总 cost
 - 实际成功回写的 assignment 数量和接驾 cost
 - 候选边生成耗时和匹配耗时
+- greedy matching / MCMF matching / assignment application / batch accounting 拆分耗时
 
 同时，回放器会为每个 request 累计一条 `DispatchReplayRequestOutcome`，记录：
 
@@ -221,8 +222,15 @@ pending
 - 平均派单等待时间
 - 候选边生成耗时
 - 匹配耗时
+- greedy matching、MCMF matching、派单回写和 batch accounting 拆分耗时
 - replay 总耗时
 - per-request 候选边覆盖、派单、完成、等待和接驾 cost
+
+当前性能定位结论：
+
+- `finite k` 下 MCMF 和派单回写都不是主要瓶颈，候选生成更值得关注。
+- `unlimited` 会导致候选边爆炸，拖慢 greedy 排序、MCMF 和 per-request 统计，因此只作为理论上界和压力测试。
+- 默认实验优先使用 `scan + finite k`，indexed 作为空间索引对照路径和后续优化方向。
 
 `replay_csv_demo` 可额外输出：
 

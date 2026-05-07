@@ -19,9 +19,10 @@
 3. 调度核心层
    - `TaxiSystem` 维护 taxi 状态、空间索引同步和 request 生命周期回写。
    - `RequestContext` 管单个 request 状态。
-   - `dispatch_batch` 生成候选边和贪心 baseline。
-   - `McmfBatchStrategy` 只在候选边集合上做匹配。
-   - `ISpatialIndex` 只负责空间查询，业务数据通过 side table 挂载。
+- `dispatch_batch` 生成候选边和贪心 baseline。
+- `McmfBatchStrategy` 只在候选边集合上做匹配。
+- `ISpatialIndex` 只负责空间查询，业务数据通过 side table 挂载。
+- `TileGridStats` 负责轻量区域 side table：pickup/dropoff heat、初始可用司机数、hotspot/cold score。
 
 4. 离线回放层
    - `DispatchReplaySimulator` 负责事件时间线。
@@ -97,7 +98,7 @@ taxi_id -> request_id, pickup_cost
 - 全量扫描路径：作为默认 replay 路径和 baseline。
 - indexed 对照路径：使用 KD-Tree `radius_query` 查询候选司机 id，再通过 `taxi_id -> DriverSnapshot` side table 取业务数据。
 
-indexed 路径暂不替换默认 replay，先用于验证空间索引抽象和后续性能优化。
+当前默认策略是 `scan + finite k`。indexed 路径暂不替换默认 replay，先用于验证空间索引抽象和后续性能优化。当前 indexed replay 已经跨 batch 维护 free-driver KD-Tree，不再每轮临时重建整棵树；但在当前样本和候选规模下，scan 仍然更简单、更快。`unlimited` 候选集只作为理论上界和压力测试，不作为常规实验默认值。
 
 replay outcome 记录每个 request 在当前策略下的服务结果：
 
@@ -150,12 +151,24 @@ tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
 - 空间索引返回轻量 `id + distance_sq` 查询结果。
 - taxi、request、heat 等业务字段放在外部 side table。
 - 后续热区统计和格点地图不应直接把业务对象塞进 KD-Tree node。
+- 下一阶段优先做轻量 tile/grid side table，而不是完整道路级格点地图。tile/grid 先服务于热区统计、冷区识别、机会成本和候选粗筛；真实路网、路径规划和拥堵传播继续后置。
 
 当前热区原型使用 pickup tile 频次作为轻量 heat side table：
 
 ```text
 dropoff_hotspot = pickup_heat(dropoff_tile) / max_pickup_heat
 cold_dropoff = 1 - dropoff_hotspot
+```
+
+当前 C++ 侧已经把这部分沉淀为 `TileGridStats`，并由 `k_sweep` 复用。第一版 tile/grid 明细包含：
+
+```text
+tile_id
+pickup_count
+dropoff_count
+available_driver_count
+hotspot_score
+cold_score
 ```
 
 `k_sweep` 对每个策略 row 输出 hot/cold dropoff 分组效果：

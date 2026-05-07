@@ -45,6 +45,9 @@
 - 1000 单样本下已做 scan / indexed 初步性能对照：当前 indexed 因每轮重建 KD-Tree，在小样本下候选生成明显慢于全量扫描。
 - 2026-05-07 本机大样本性能对照已跑通默认矩阵：`limits=1000,5000,20000`、`modes=scan,indexed`、`radii=0.01,0.03,0.05`、`k=1,2,5,unlimited`，结果位于 `build-local/perf-sweeps/summary.csv`。需要注明：在 `window-seconds=86400` 下，`sample_limit=20000` 实际只取得 7162 条有效请求，因此这一档应理解为“一天窗口内可用最大样本”，不是完整 20000 单。
 - 本机性能对照结论：scan / indexed 指标一致，但 indexed 当前在所有样本档都慢于 scan。主要瓶颈不是 KD-Tree 查询本身，而是 indexed 候选生成路径每轮 batch 都重新构造整棵司机 KD-Tree；KD-Tree 内部已有替罪羊式局部重建机制，但没有跨 batch 复用索引。
+- 2026-05-07 已完成 indexed 第一轮优化：replay 在 indexed 模式下维护跨 batch 的 free-driver KD-Tree，派单成功时 `erase(taxi_id)`，订单完成并更新到 dropoff 后 `upsert(...)`；候选生成新增复用外部 `ISpatialIndex` 的 overload。优化后 1000 单 / radius 0.03 / k unlimited 的 indexed 候选生成从约 372ms 降到约 89ms，5000 单 / radius 0.03 / k=1 从约 23.8s 降到约 2.95s；指标与 scan 保持一致。当前 indexed 仍慢于 scan，后续瓶颈转向 KD-Tree range query / 候选生成细节优化。
+- 2026-05-07 已拆分 replay 耗时指标：保留 `matching_ms`，新增 `greedy_matching_ms`、`mcmf_matching_ms`、`assignment_application_ms`、`batch_accounting_ms`。定位样本显示，派单回写不是主要瓶颈：5000 单 / radius 0.03 / k=1 下 scan 的 MCMF 约 28ms、回写约 45ms、候选生成约 1024ms；同条件 indexed 的 MCMF 约 30ms、回写约 63ms、候选生成约 2720ms。`unlimited` 下候选边膨胀到约 378 万，scan 的 greedy 约 1079ms、MCMF 约 4841ms、batch accounting 约 300ms，说明瓶颈主要来自候选边膨胀后的排序/匹配，而不是状态回写逻辑复杂。
+- 当前默认实验口径：使用 `scan + finite k`。`indexed` 作为空间索引正确性 / 性能对照路径保留，暂不替换默认候选生成；`unlimited` 只作为理论上界和压力测试，不作为常规策略。
 - 已新增批量性能 runner：`tools/go_batch_experiments`，可按 limit 阶梯自动预处理并合并 scan / indexed 实验 CSV。
 - Go 实验 runner 已补充轻量 tile 热区统计：pickup/dropoff 热度均值、冷区分数、热区/冷区请求数和比例。
 - 已新增实验结果汇总工具：`tools/go_experiment_summary`，用于从总 CSV 中输出紧凑对照和推荐配置。
@@ -54,6 +57,7 @@
 - 第一版 opportunity adjustment 已进入实验报表，默认 `cold_dropoff_penalty = 1.0`、`hot_dropoff_discount = 1.0`，暂不影响 dispatch。
 - `go_experiments`、`go_batch_experiments` 已透传 opportunity adjustment 参数。
 - `go_experiment_summary` 已切换到展示 per-row hot/cold completion / coverage / opportunity 指标。
+- 轻量 tile/grid side table 第一版已落地到 C++：`TileGridStats` 统计 pickup/dropoff heat、初始 free driver count、hotspot/cold score，并接入 `k_sweep` hot/cold dropoff 分组；`k_sweep --tile-stats-csv` 可导出 tile 明细。
 
 ## 当前数据流
 
@@ -70,6 +74,24 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 ```
 
 ## 近期目标
+
+### 0. 当前推荐推进顺序
+
+当前调度主链路已经够用，先不要继续深挖 indexed 细节，也不要直接上完整格点路径规划。
+
+推荐下一步：
+
+1. 保持默认实验为 `scan + finite k`，用 replay 继续产出稳定指标。
+2. 做轻量 tile/grid side table：围绕 pickup/dropoff tile heat、冷区分数、机会成本和候选粗筛，不做真实道路路径。
+3. 把热区 / 冷区统计从 Go 实验补充列逐步沉淀成清晰的数据结构和报告口径。
+4. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
+
+暂缓：
+
+- 完整格点地图路径规划。
+- 真实道路最短路。
+- 把机会成本写进 MCMF cost。
+- 继续为 indexed 做底层性能微调，除非 scan + finite k 已经不能支撑目标样本。
 
 ### 1. 空间索引抽象与 KD-Tree 侧表化
 
@@ -206,7 +228,7 @@ NYC.csv -> Go preprocess -> normalized CSV -> replay_csv_demo -> report
 - 每轮平均 candidate edges。
 - 运行大样本分级性能对照：1000 / 5000 / 20000 单，观察 scan 和 indexed 的分界点。
 - 对照大样本下 hot/cold dropoff 的完成率、候选边覆盖率和接驾成本差异。
-- 优化 indexed 候选生成：不要在每轮 batch 内临时重建完整 KD-Tree；优先考虑在 replay 层维护跨 batch 的 free-driver spatial index，并在 assignment / trip_complete / taxi position update 时做增量 erase / upsert。树内部继续使用替罪羊式延迟重建，避免每轮全量 rebuild。
+- indexed 候选生成继续作为后续优化方向：跨 batch 复用 free-driver spatial index 已完成，后面只有在需要替换默认候选生成器或支持更大样本时，再观察 KD-Tree range query、结果排序、side-table 过滤和每 request top-k 裁剪的耗时占比。树内部继续使用替罪羊式延迟重建，避免回到每轮全量 rebuild。
 
 已补充：
 
@@ -225,7 +247,7 @@ NYC.csv -> Go preprocess -> normalized CSV -> replay_csv_demo -> report
 - `driver-every`
 - tile 粗筛开关
 
-### 5. 区域热度原型
+### 5. 轻量 Tile/Grid 区域热度原型
 
 暂时不直接做完整格点地图。先做轻量热度统计：
 
@@ -233,6 +255,9 @@ NYC.csv -> Go preprocess -> normalized CSV -> replay_csv_demo -> report
 - 计算 `pickup_hotspot_score` 和 `dropoff_hotspot_score`。
 - 判断订单终点是热区还是冷区。
 - 估计司机完成本单后的后续接单机会。
+- 建议新增明确的 tile/grid side table 口径：`tile_id -> pickup_count / dropoff_count / available_driver_count / hotspot_score / cold_score`。
+- 第一版 tile/grid 只服务于统计、报告和粗筛，不承担路径规划。
+- 已新增 `TileGridStats` 模块，并让 `k_sweep` 使用统一 side table 替代匿名 hotspot 统计。
 - 第一版 tile heat map 已接入 `go_experiments` 输出，默认 `hotspot_score >= 0.7` 为热区，`<= 0.3` 为冷区。
 - `tools/go_batch_experiments` 会自动继承这些热区统计列。
 - 分组统计已从全局一组推进到每个实验 row：`k_sweep` 基于当前策略 replay outcome 输出 hot/cold dropoff 服务效果。

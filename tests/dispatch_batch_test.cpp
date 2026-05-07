@@ -135,6 +135,21 @@ int main() {
   assert_same_stats(candidate_result.stats, indexed_candidate_result.stats);
   assert_same_edges(candidate_result.edges, indexed_candidate_result.edges);
 
+  KdTreeSpatialIndex external_driver_index;
+  for (const auto &indexed_driver : batch_drivers) {
+    external_driver_index.upsert(Point(indexed_driver.location.coords[0],
+                                       indexed_driver.location.coords[1],
+                                       indexed_driver.taxi_id));
+  }
+  const auto reused_index_candidate_result =
+      generate_candidate_edges_indexed_with_stats(
+          matching_batch, CandidateEdgeOptions(2.0, 10.0),
+          external_driver_index);
+  assert_same_stats(candidate_result.stats,
+                    reused_index_candidate_result.stats);
+  assert_same_edges(candidate_result.edges,
+                    reused_index_candidate_result.edges);
+
   assert(generate_candidate_edges(matching_batch, -1.0).empty());
   assert(generate_candidate_edges(matching_batch, 2.0, 0.0).empty());
   const auto bad_radius_indexed = generate_candidate_edges_indexed_with_stats(
