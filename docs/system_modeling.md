@@ -19,16 +19,18 @@
 3. 调度核心层
    - `TaxiSystem` 维护 taxi 状态、空间索引同步和 request 生命周期回写。
    - `RequestContext` 管单个 request 状态。
-- `dispatch_batch` 生成候选边和贪心 baseline。
-- `McmfBatchStrategy` 只在候选边集合上做匹配。
-- `ISpatialIndex` 只负责空间查询，业务数据通过 side table 挂载。
-- `TileGridStats` 负责轻量区域 side table：pickup/dropoff heat、初始可用司机数、hotspot/cold score。
+   - `dispatch_batch` 生成候选边和贪心 baseline。
+   - `McmfBatchStrategy` 只在候选边集合上做匹配。
+   - `ISpatialIndex` 只负责空间查询，业务数据通过 side table 挂载。
+   - `TileGridStats` 负责轻量区域 side table：pickup/dropoff heat、初始可用司机数、hotspot/cold score。
+   - `TileRegionMap` 负责离线 region 审计：从 tile stats 构建受约束 UF region，不参与 dispatch。
 
 4. 离线回放层
    - `DispatchReplaySimulator` 负责事件时间线。
    - replay 使用 MCMF 结果正式回写，greedy 用作对比指标。
    - replay 输出总指标、每轮 batch 日志和 per-request outcome。
    - `k_sweep` 基于 replay outcome 做每个实验 row 的 hot/cold dropoff 分组报告。
+   - `go_batch_experiments` 可按 `tile-grid-cols` 跑 100/200/400 多分辨率对照。
 
 ## 2. 数据流
 
@@ -131,7 +133,7 @@ source -> taxi -> request -> sink
 
 ## 5. Tile 建模
 
-当前 tile 是简单固定网格，用作粗筛。
+当前 tile 是简单固定网格，用作统计、审计和可选粗筛。
 
 定位：
 
@@ -153,6 +155,9 @@ tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
 - 后续热区统计和格点地图不应直接把业务对象塞进 KD-Tree node。
 - 下一阶段优先做轻量 tile/grid side table，而不是完整道路级格点地图。tile/grid 先服务于热区统计、冷区识别、机会成本和候选粗筛；真实路网、路径规划和拥堵传播继续后置。
 - region / zone 是 tile 之上的慢变解释层，具体边界见 `docs/region_design.md`。当前 `tile_region_map` 已提供受约束离线 UF 原型，但不把 region 作为派单硬边界，也不每个 batch 动态重划。
+- 当前 `simpleTile(grid_cols)` 是项目 baseline。它已经支持 100/200/400 多分辨率实验，优先用于验证区域尺度和热区稳定性。
+- H3 是后续可选升级，不是当前依赖。若要接入，应先抽象 `CellIndex`，再让 `simpleTile` 和 H3 成为两个实现。
+- 地图瓦片和真实路由中间件属于展示层或路网层，不应反向污染当前 replay / dispatch 建模。
 
 当前热区原型使用 pickup tile 频次作为轻量 heat side table：
 

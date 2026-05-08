@@ -60,6 +60,8 @@
 - `go_experiments` 已新增 `-zone-fixed-pricing` 极端验证模式：完全不看公里数，只按 hot->hot 加价、cold->cold 减价、其他组合不变来估算固定单价收入；该模式只进报表，不影响 dispatch。
 - 轻量 tile/grid side table 第一版已落地到 C++：`TileGridStats` 统计 pickup/dropoff heat、初始 free driver count、hotspot/cold score，并接入 `k_sweep` hot/cold dropoff 分组；`k_sweep --tile-stats-csv` 可导出 tile 明细。
 - 受约束离线 UF region map 第一版已落地到 C++：`tile_region_map` 使用 `TileGridStats` 构建 `tile_id -> region_id`，`k_sweep --region-map-csv` / `--region-stats-csv` 可导出审计明细；region stats 已包含 bbox km 粗估，不影响 dispatch、候选生成或 MCMF cost。
+- 多分辨率 tile / region sweep 第一版已接入：Go preprocess 支持 `-tile-grid-cols`，`k_sweep` 支持 `--tile-grid-cols`，`go_batch_experiments` 支持 `-tile-grid-cols 100,200,400` 并按 `normalized/grid_<N>/limit_<M>` 保存 normalized CSV、tile stats、region map 和 region stats，同时输出 `grid_<N>/summary.csv`；总表新增 `tile_grid_cols`。
+- 当前空间网格路线已经收口为：`simpleTile(grid_cols)` 继续作为 baseline；H3 作为后续候选升级方向，等讨论清楚是否需要真实地理层级网格后再接入；地图瓦片和真实路由中间件继续后置。
 
 ## 当前数据流
 
@@ -86,8 +88,11 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 1. 保持默认实验为 `scan + finite k`，用 replay 继续产出稳定指标。
 2. 做轻量 tile/grid side table：围绕 pickup/dropoff tile heat、冷区分数、机会成本和候选粗筛，不做真实道路路径。
 3. 先按 `docs/region_design.md` 保持区域边界清晰：region map 慢变，heat/cold 快变，UF 第一版只做统计审计。
-4. 把热区 / 冷区统计从 Go 实验补充列逐步沉淀成清晰的数据结构和报告口径。
-5. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
+4. 先跑 `100 / 200 / 400` resolution sweep，看 `region_stats.csv` 的 region 数量、平均 tile 数、最大对角线和面积，再决定是否写清洗算法。
+5. 先做 GeoJSON 导出和地图展示，把 `tile_stats.csv`、`region_stats.csv`、`region_map.csv` 画出来，形成可解释的项目展示闭环。
+6. 地图完成后，再回到计价因子：先整理已有里程收入、接驾成本、hot/cold fixed pricing、opportunity adjustment，再决定是否增加更复杂的时间、拥堵、区域、供需因子。
+7. 讨论是否抽象 `CellIndex`：先让 `simpleTile` 实现，如果确实需要更专业地理网格，再增加 H3 实现。
+8. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
 
 暂缓：
 
@@ -98,6 +103,9 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 - 将 UF region map 接入派单硬边界或 MCMF cost。
 - 每个 batch 动态重划 region map。
 - 继续为 indexed 做底层性能微调，除非 scan + finite k 已经不能支撑目标样本。
+- 在 100/200/400 多分辨率数据跑完前，先不写 region 清洗算法或自适应 tile。
+- 在讨论清楚 simpleTile/H3 的边界前，先不接地图瓦片服务、OSM 路由或真实道路最短路。
+- 在地图展示闭环完成前，先不继续叠复杂计价因子、Redis/RedisGeo、WebSocket 实时流或外部 GIS 中间件。
 
 ### 1. 空间索引抽象与 KD-Tree 侧表化
 
@@ -270,6 +278,7 @@ NYC.csv -> Go preprocess -> normalized CSV -> replay_csv_demo -> report
 - 当前分组指标包括请求数、候选边覆盖率、派单率、完成率、平均订单距离、平均接驾成本和机会成本估算。
 - region / zone 只作为 tile 之上的慢变解释层，当前 `tile_region_map` 已提供受约束离线 UF 原型，不进入 dispatch 权重或候选生成。
 - `region_stats.csv` 的 `approx_width_km`、`approx_height_km`、`approx_diagonal_km`、`approx_area_km2` 用于观察 UF 合并后的区域几何尺度；它们是 bbox 粗估，不是道路里程。
+- 多分辨率对照先覆盖 `100 / 200 / 400` 三档网格。不同 grid cols 的 normalized 数据必须分目录保存，避免同一个 `tile_id` 在不同分辨率下语义混用。
 - 当前机会成本公式只输出估算，不进入 MCMF cost：
 
 ```text
@@ -320,6 +329,58 @@ other = base_fare
 - 根据新空间索引抽象，把 replay 默认候选边生成从全量扫描迁移到 KD-Tree / grid 查询。
 - 评估是否抽象 `CandidateEdgeGenerator`。
 
+## 可视化与后续计价顺序
+
+当前建议顺序：
+
+```text
+CSV replay artifacts
+  -> GeoJSON export
+  -> static web map
+  -> timeline playback
+  -> pricing factor experiments
+  -> optional CellIndex / H3
+  -> optional Redis / routing / realtime middleware
+```
+
+第一阶段可视化只需要文件式产物，不需要 Redis：
+
+- `tile_stats.csv -> tile_stats.geojson`
+- `region_stats.csv -> region_stats.geojson`
+- `region_map.csv` 用于把 tile 和 region 关系挂到 hover / tooltip。
+- region 第一版先画 bbox polygon，不做复杂 polygon union。
+
+复杂计价因子继续后置。当前已有计价/收入口径包括：
+
+- 里程收入：`fare_per_km * total_trip_km * completion_rate`。
+- 接驾成本：`applied_pickup_cost` 转换为估算公里成本。
+- hot/cold fixed pricing：只按 hot->hot / cold->cold 固定因子验证。
+- opportunity adjustment：只做报表估算，不写入 MCMF cost。
+
+后续如果继续做计价，应先保证地图上能解释 hot/cold、region 和完成率，再考虑加入时间窗口、拥堵、供需、区域机会成本等复杂因子。底层空间索引和中间件优化只在展示和计价实验都不够用时再推进。
+
+建议项目目录分层：
+
+```text
+C-program/
+  src/                  C++ 调度核心
+  include/              C++ 头文件
+  tests/                C++ 测试
+  tools/                离线实验和转换工具
+    geojson_export/     后续新增：CSV -> GeoJSON
+  web/
+    map_viewer/         后续新增：MapLibre 静态地图展示
+  docs/
+  plan/
+  build-local/          本地构建和实验产物，不进入 git
+```
+
+边界：
+
+- `tools/geojson_export` 只负责把 `tile_stats.csv` / `region_stats.csv` / `region_map.csv` 转成 GeoJSON。
+- `web/map_viewer` 只负责加载 GeoJSON 并用 MapLibre 展示，不承载 replay、计价或派单逻辑。
+- 第一版前端保持静态文件工作流，不接 Redis、WebSocket、数据库或真实路由服务。
+
 ## 暂时不做
 
 - 数据库。
@@ -336,6 +397,9 @@ other = base_fare
 - 复杂收益和重定位收益。
 - cgo / C++ dll。
 - 机器学习价格预测。
+- Redis / RedisGeo 在线位置服务。
+- WebSocket 实时地图流。
+- H3 直接替换当前 CSV 主链路。
 
 ## 当前原则
 

@@ -36,6 +36,10 @@ type options struct {
 	priceCap               float64
 	coldDropoffPenalty     float64
 	hotDropoffDiscount     float64
+	tileGridCols           int
+	tileStatsCSVPath       string
+	regionMapCSVPath       string
+	regionStatsCSVPath     string
 	zoneFixedPricing       bool
 	zoneFixedBaseFare      float64
 	hotHotFactor           float64
@@ -90,6 +94,10 @@ func main() {
 	flag.Float64Var(&opts.priceCap, "price-cap", 1.8, "maximum hotspot price factor")
 	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "opportunity cold dropoff penalty passed to k_sweep")
 	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "opportunity hot dropoff discount passed to k_sweep")
+	flag.IntVar(&opts.tileGridCols, "tile-grid-cols", 100, "tile grid columns/rows passed to k_sweep region stats")
+	flag.StringVar(&opts.tileStatsCSVPath, "tile-stats-csv", "", "optional tile stats CSV path passed to k_sweep")
+	flag.StringVar(&opts.regionMapCSVPath, "region-map-csv", "", "optional region map CSV path passed to k_sweep")
+	flag.StringVar(&opts.regionStatsCSVPath, "region-stats-csv", "", "optional region stats CSV path passed to k_sweep")
 	flag.BoolVar(&opts.zoneFixedPricing, "zone-fixed-pricing", false, "estimate fixed per-trip pricing by hot/cold pickup/dropoff zones")
 	flag.Float64Var(&opts.zoneFixedBaseFare, "zone-fixed-base-fare", 1.0, "base fare for zone-fixed pricing")
 	flag.Float64Var(&opts.hotHotFactor, "hot-hot-factor", 1.2, "zone-fixed factor for hot pickup to hot dropoff")
@@ -126,6 +134,9 @@ func run(opts options) error {
 	}
 	if opts.hotDropoffDiscount < 0 {
 		return fmt.Errorf("-hot-dropoff-discount must be non-negative")
+	}
+	if opts.tileGridCols <= 0 {
+		return fmt.Errorf("-tile-grid-cols must be positive")
 	}
 	if opts.zoneFixedBaseFare < 0 {
 		return fmt.Errorf("-zone-fixed-base-fare must be non-negative")
@@ -337,7 +348,17 @@ func runKSweep(opts options) ([]sweepRow, error) {
 		"--seconds-per-distance-unit", strconv.FormatFloat(opts.secondsPerDistanceUnit, 'f', -1, 64),
 		"--cold-dropoff-penalty", strconv.FormatFloat(opts.coldDropoffPenalty, 'f', -1, 64),
 		"--hot-dropoff-discount", strconv.FormatFloat(opts.hotDropoffDiscount, 'f', -1, 64),
+		"--tile-grid-cols", strconv.Itoa(opts.tileGridCols),
 	)
+	if opts.tileStatsCSVPath != "" {
+		cmd.Args = append(cmd.Args, "--tile-stats-csv", filepath.FromSlash(opts.tileStatsCSVPath))
+	}
+	if opts.regionMapCSVPath != "" {
+		cmd.Args = append(cmd.Args, "--region-map-csv", filepath.FromSlash(opts.regionMapCSVPath))
+	}
+	if opts.regionStatsCSVPath != "" {
+		cmd.Args = append(cmd.Args, "--region-stats-csv", filepath.FromSlash(opts.regionStatsCSVPath))
+	}
 	if opts.indexedCandidates {
 		cmd.Args = append(cmd.Args, "--indexed-candidates")
 	}

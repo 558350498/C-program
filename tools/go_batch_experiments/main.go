@@ -23,6 +23,7 @@ type options struct {
 	modes                  string
 	radii                  string
 	kValues                string
+	tileGridCols           string
 	windowSeconds          int64
 	driverEvery            int
 	driverRadius           float64
@@ -43,8 +44,16 @@ type options struct {
 }
 
 type normalizedPaths struct {
-	requests string
-	drivers  string
+	requests    string
+	drivers     string
+	tileStats   string
+	regionMap   string
+	regionStats string
+}
+
+type gridSummaryOutput struct {
+	file   *os.File
+	writer *csv.Writer
 }
 
 func main() {
@@ -59,6 +68,7 @@ func main() {
 	flag.StringVar(&opts.modes, "modes", "scan,indexed", "comma-separated candidate modes: scan,indexed")
 	flag.StringVar(&opts.radii, "radii", "0.01,0.03,0.05", "comma-separated candidate radii")
 	flag.StringVar(&opts.kValues, "k-values", "1,2,5,unlimited", "comma-separated k values")
+	flag.StringVar(&opts.tileGridCols, "tile-grid-cols", "100", "comma-separated tile grid columns/rows to preprocess and sweep")
 	flag.Int64Var(&opts.windowSeconds, "window-seconds", 86400, "continuous pickup-time window for preprocessing")
 	flag.IntVar(&opts.driverEvery, "driver-every", 2, "synthesize one driver for every N valid requests")
 	flag.Float64Var(&opts.driverRadius, "driver-radius", 0.003, "random driver offset radius around pickup point")
@@ -86,6 +96,10 @@ func main() {
 
 func run(opts options) error {
 	limits, err := parsePositiveIntList(opts.limits, "-limits")
+	if err != nil {
+		return err
+	}
+	gridColsList, err := parsePositiveIntList(opts.tileGridCols, "-tile-grid-cols")
 	if err != nil {
 		return err
 	}
@@ -163,57 +177,76 @@ func run(opts options) error {
 
 	var wroteHeader bool
 	var experimentHeader []string
-	for _, limit := range limits {
-		paths := normalizedPaths{
-			requests: filepath.Join(outputDir, "normalized", fmt.Sprintf("limit_%d", limit), "requests.csv"),
-			drivers:  filepath.Join(outputDir, "normalized", fmt.Sprintf("limit_%d", limit), "drivers.csv"),
-		}
+	var summaryHeader []string
+	gridSummaries := map[int]*gridSummaryOutput{}
+	defer closeGridSummaries(gridSummaries)
+	for _, gridCols := range gridColsList {
+		for _, limit := range limits {
+			normalizedDir := filepath.Join(outputDir, "normalized",
+				fmt.Sprintf("grid_%d", gridCols), fmt.Sprintf("limit_%d", limit))
+			paths := normalizedPaths{
+				requests:    filepath.Join(normalizedDir, "requests.csv"),
+				drivers:     filepath.Join(normalizedDir, "drivers.csv"),
+				tileStats:   filepath.Join(normalizedDir, "tile_stats.csv"),
+				regionMap:   filepath.Join(normalizedDir, "region_map.csv"),
+				regionStats: filepath.Join(normalizedDir, "region_stats.csv"),
+			}
 
-		fmt.Fprintf(os.Stderr, "preprocess limit=%d\n", limit)
-		if err := runPreprocess(opts, preprocessDir, rawInput, paths, limit); err != nil {
-			return err
-		}
-
-		for _, mode := range modes {
-			fmt.Fprintf(os.Stderr, "experiment limit=%d mode=%s\n", limit, mode)
-			records, err := runExperiment(opts, experimentsDir, kSweepPath, paths, mode)
-			if err != nil {
+			fmt.Fprintf(os.Stderr, "preprocess grid=%d limit=%d\n", gridCols, limit)
+			if err := runPreprocess(opts, preprocessDir, rawInput, paths, limit, gridCols); err != nil {
 				return err
 			}
-			if len(records) < 2 {
-				return fmt.Errorf("experiment limit=%d mode=%s returned no data rows", limit, mode)
-			}
 
-			if !wroteHeader {
-				experimentHeader = append([]string{}, records[0]...)
-				header := append([]string{
-					"sample_limit",
-					"window_seconds",
-					"driver_every",
-					"driver_radius",
-				}, experimentHeader...)
-				if err := writer.Write(header); err != nil {
+			for _, mode := range modes {
+				fmt.Fprintf(os.Stderr, "experiment grid=%d limit=%d mode=%s\n", gridCols, limit, mode)
+				records, err := runExperiment(opts, experimentsDir, kSweepPath, paths, mode, gridCols)
+				if err != nil {
 					return err
 				}
-				wroteHeader = true
-			} else if !sameStrings(experimentHeader, records[0]) {
-				return fmt.Errorf("experiment header changed for limit=%d mode=%s", limit, mode)
-			}
+				if len(records) < 2 {
+					return fmt.Errorf("experiment grid=%d limit=%d mode=%s returned no data rows", gridCols, limit, mode)
+				}
 
-			for _, record := range records[1:] {
-				outputRecord := append([]string{
-					strconv.Itoa(limit),
-					strconv.FormatInt(opts.windowSeconds, 10),
-					strconv.Itoa(opts.driverEvery),
-					formatFloat(opts.driverRadius),
-				}, record...)
-				if err := writer.Write(outputRecord); err != nil {
+				if !wroteHeader {
+					experimentHeader = append([]string{}, records[0]...)
+					header := append([]string{
+						"sample_limit",
+						"tile_grid_cols",
+						"window_seconds",
+						"driver_every",
+						"driver_radius",
+					}, experimentHeader...)
+					if err := writer.Write(header); err != nil {
+						return err
+					}
+					summaryHeader = append([]string{}, header...)
+					wroteHeader = true
+				} else if !sameStrings(experimentHeader, records[0]) {
+					return fmt.Errorf("experiment header changed for grid=%d limit=%d mode=%s", gridCols, limit, mode)
+				}
+
+				for _, record := range records[1:] {
+					outputRecord := append([]string{
+						strconv.Itoa(limit),
+						strconv.Itoa(gridCols),
+						strconv.FormatInt(opts.windowSeconds, 10),
+						strconv.Itoa(opts.driverEvery),
+						formatFloat(opts.driverRadius),
+					}, record...)
+					if err := writer.Write(outputRecord); err != nil {
+						return err
+					}
+					if err := writeGridSummaryRecord(gridSummaries, outputDir, gridCols, summaryHeader, outputRecord); err != nil {
+						return err
+					}
+				}
+				writer.Flush()
+				if err := writer.Error(); err != nil {
 					return err
 				}
-			}
-			writer.Flush()
-			if err := writer.Error(); err != nil {
-				return err
+				if err := flushGridSummary(gridSummaries, gridCols); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -222,7 +255,50 @@ func run(opts options) error {
 	return writer.Error()
 }
 
-func runPreprocess(opts options, preprocessDir string, rawInput string, paths normalizedPaths, limit int) error {
+func writeGridSummaryRecord(outputs map[int]*gridSummaryOutput, outputDir string, gridCols int, header []string, record []string) error {
+	output, ok := outputs[gridCols]
+	if !ok {
+		path := filepath.Join(outputDir, fmt.Sprintf("grid_%d", gridCols), "summary.csv")
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return err
+		}
+		file, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		output = &gridSummaryOutput{
+			file:   file,
+			writer: csv.NewWriter(file),
+		}
+		outputs[gridCols] = output
+		if err := output.writer.Write(header); err != nil {
+			return err
+		}
+	}
+	return output.writer.Write(record)
+}
+
+func flushGridSummary(outputs map[int]*gridSummaryOutput, gridCols int) error {
+	output, ok := outputs[gridCols]
+	if !ok {
+		return nil
+	}
+	output.writer.Flush()
+	return output.writer.Error()
+}
+
+func closeGridSummaries(outputs map[int]*gridSummaryOutput) {
+	for _, output := range outputs {
+		if output.writer != nil {
+			output.writer.Flush()
+		}
+		if output.file != nil {
+			_ = output.file.Close()
+		}
+	}
+}
+
+func runPreprocess(opts options, preprocessDir string, rawInput string, paths normalizedPaths, limit int, gridCols int) error {
 	if err := os.MkdirAll(filepath.Dir(paths.requests), 0755); err != nil {
 		return err
 	}
@@ -235,12 +311,13 @@ func runPreprocess(opts options, preprocessDir string, rawInput string, paths no
 		"-limit", strconv.Itoa(limit),
 		"-driver-every", strconv.Itoa(opts.driverEvery),
 		"-driver-radius", strconv.FormatFloat(opts.driverRadius, 'f', -1, 64),
+		"-tile-grid-cols", strconv.Itoa(gridCols),
 		"-seed", strconv.FormatInt(opts.seed, 10),
 	}
 	return runCommand(preprocessDir, "go", args...)
 }
 
-func runExperiment(opts options, experimentsDir string, kSweepPath string, paths normalizedPaths, mode string) ([][]string, error) {
+func runExperiment(opts options, experimentsDir string, kSweepPath string, paths normalizedPaths, mode string, gridCols int) ([][]string, error) {
 	args := []string{
 		"run", ".",
 		"-requests", paths.requests,
@@ -258,6 +335,10 @@ func runExperiment(opts options, experimentsDir string, kSweepPath string, paths
 		"-price-cap", strconv.FormatFloat(opts.priceCap, 'f', -1, 64),
 		"-cold-dropoff-penalty", strconv.FormatFloat(opts.coldDropoffPenalty, 'f', -1, 64),
 		"-hot-dropoff-discount", strconv.FormatFloat(opts.hotDropoffDiscount, 'f', -1, 64),
+		"-tile-grid-cols", strconv.Itoa(gridCols),
+		"-tile-stats-csv", paths.tileStats,
+		"-region-map-csv", paths.regionMap,
+		"-region-stats-csv", paths.regionStats,
 		"-zone-fixed-base-fare", strconv.FormatFloat(opts.zoneFixedBaseFare, 'f', -1, 64),
 		"-hot-hot-factor", strconv.FormatFloat(opts.hotHotFactor, 'f', -1, 64),
 		"-cold-cold-factor", strconv.FormatFloat(opts.coldColdFactor, 'f', -1, 64),

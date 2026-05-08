@@ -105,6 +105,28 @@ int main() {
   }
 
   {
+    TileRegionMapOptions options;
+    options.grid_cols = 200;
+    REQUIRE(is_valid_region_tile(39999, options));
+    REQUIRE(!is_valid_region_tile(40000, options));
+    REQUIRE(tile_region_row(39999, options) == 199);
+    REQUIRE(tile_region_col(39999, options) == 199);
+
+    const TileGridStats stats =
+        make_stats({{0, 2, 1, 1}, {1, 2, 1, 1}, {200, 2, 1, 1},
+                    {40000, 2, 1, 1}});
+    const TileRegionMap map = build_tile_region_map(stats, options);
+    REQUIRE(map.region_for_tile(0) == map.region_for_tile(1));
+    REQUIRE(map.region_for_tile(0) == map.region_for_tile(200));
+    REQUIRE(map.region_for_tile(40000) == -1);
+    REQUIRE(map.region_entries().size() == 1);
+    REQUIRE(map.region_entries()[0].approx_width_km > 0.0);
+    REQUIRE(map.region_entries()[0].approx_width_km < 4.0);
+    REQUIRE(map.region_entries()[0].approx_height_km > 0.0);
+    REQUIRE(map.region_entries()[0].approx_height_km < 4.0);
+  }
+
+  {
     const TileGridStats stats = make_stats({{0, 2, 1, 1}, {1, 2, 1, 1}});
     const TileRegionMap map = build_tile_region_map(stats);
     const std::string map_csv = format_tile_region_map_csv(map);

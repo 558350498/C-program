@@ -11,6 +11,34 @@
 5. `docs/region_design.md`
 6. `plan/dispatch_next_steps.md`
 
+## 当前架构快照
+
+当前项目已经形成稳定的离线 replay 实验架构：
+
+```text
+Go raw CSV preprocess
+  -> normalized requests/drivers CSV
+  -> C++ replay / dispatch / MCMF
+  -> k_sweep grouped metrics
+  -> Go experiment summary
+```
+
+当前默认实验口径：
+
+- 候选生成：`scan + finite k`。
+- `indexed`：保留为空间索引正确性和性能对照路径。
+- `unlimited`：只作为理论上界和压力测试。
+- `TileGridStats`：当前事实统计层，负责 tile heat/cold 和初始 free driver count。
+- `TileRegionMap`：受约束离线 UF 审计产物，只解释 region 尺度，不接派单主线。
+- 多分辨率对照：支持 `100 / 200 / 400` grid cols，用于判断 region 是否因为 tile 太粗而过大。
+
+空间建模当前结论：
+
+- 现在继续保留 `simpleTile(grid_cols)` 作为最小实现和兼容 baseline。
+- H3 是更专业的后续候选路线，适合真实地理网格、层级分辨率、邻居查询和供需热区分析。
+- 暂不引入真实地图瓦片、OSM 路网、OSRM/GraphHopper/Valhalla 等中间件；这些属于地图展示或真实路由层，不是当前派单实验的必要依赖。
+- 下一步讨论重点是：是否抽象 `CellIndex`，先让 `simpleTile` 实现，再决定是否替换为 H3。
+
 ## 模块索引
 
 ### TaxiSystem
@@ -148,8 +176,8 @@
 - `replay_csv_demo`：读取 normalized CSV，运行一次 replay 并输出 summary。
 - `k_sweep`：对候选集规模 `max_edges_per_request` 和候选半径做批量扫描，输出 CSV。
 - `go_experiments`：Go 实验编排层，调用 `k_sweep` 并补充供需比、订单里程收入、接驾成本、热点调价和粗略净收入估算。
-- `go_batch_experiments`：按样本规模、候选生成模式、半径和 k 值批量跑预处理与实验，输出总表。
-- `go_experiment_summary`：读取实验总表，输出紧凑对照和推荐配置。
+- `go_batch_experiments`：按样本规模、tile grid 分辨率、候选生成模式、半径和 k 值批量跑预处理与实验，输出总表。
+- `go_experiment_summary`：读取实验总表，输出紧凑对照、推荐配置和可选 region 尺度汇总。
 
 位置：
 
@@ -235,7 +263,9 @@
 
 受约束离线 UF region map 原型。输入 `TileGridStats`，输出稳定的 `tile_id -> region_id` 和 region 聚合明细；只用于统计和审计，不影响 dispatch、MCMF cost 或候选生成。
 
-`region_stats.csv` 会额外输出 bbox 粗略公里尺度：`approx_width_km`、`approx_height_km`、`approx_diagonal_km`、`approx_area_km2`。这些是按 Go `simpleTile()` 的 100x100 NYC 网格估算的几何距离，不是真实路网距离。
+`region_stats.csv` 会额外输出 bbox 粗略公里尺度：`approx_width_km`、`approx_height_km`、`approx_diagonal_km`、`approx_area_km2`。这些是按 Go `simpleTile()` 的当前 grid cols 估算的几何距离，不是真实路网距离。
+
+多分辨率实验可通过 `-tile-grid-cols` / `--tile-grid-cols` 对照 `100 / 200 / 400` 三档网格。不同 grid cols 的 normalized CSV 必须分目录保存，避免 tile id 语义混用。
 
 核心类型：
 
@@ -292,7 +322,7 @@
 
 ### Go CSV Preprocess
 
-读取 Kaggle raw CSV，输出标准化 replay 输入，并合成供不应求司机快照。支持 `-window-seconds` 选取连续 pickup-time 窗口，避免前 N 条 raw row 横跨过长时间。
+读取 Kaggle raw CSV，输出标准化 replay 输入，并合成供不应求司机快照。支持 `-window-seconds` 选取连续 pickup-time 窗口，避免前 N 条 raw row 横跨过长时间；支持 `-tile-grid-cols` 调整 `simpleTile()` 网格分辨率。
 
 位置：
 
@@ -347,6 +377,15 @@ Region map / stats 明细导出：
 ```powershell
 build-local\k_sweep.exe --radii 0.03 --k-values 1,2,5 --region-map-csv build-local\region_map.csv --region-stats-csv build-local\region_stats.csv
 ```
+
+多分辨率 tile / region sweep：
+
+```powershell
+cd tools\go_batch_experiments
+go run . -limits 1000 -modes scan -radii 0.03 -k-values 1,2,5 -tile-grid-cols 100,200,400 -output-dir ..\..\build-local\perf-sweeps-grid-sweep-smoke
+```
+
+批量输出会包含总表 `summary.csv`，以及每档自己的 `grid_100\summary.csv`、`grid_200\summary.csv`、`grid_400\summary.csv`。
 
 `--indexed-candidates` 和 `k=unlimited` 主要用于对照和压力测试，不作为默认实验口径。
 

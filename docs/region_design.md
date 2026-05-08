@@ -1,6 +1,6 @@
 # 区域设计笔记
 
-这份文档记录 tile / region / heat 的边界。当前阶段已经实现受约束离线 UF region map 原型，但它只服务统计和审计，不接入 dispatch、MCMF cost、动态区域重划或候选粗筛。
+这份文档记录 tile / region / heat 的边界。当前阶段已经实现受约束离线 UF region map 原型，并新增 `100 / 200 / 400` 多分辨率 tile sweep；它们都只服务统计和审计，不接入 dispatch、MCMF cost、动态区域重划或候选粗筛。
 
 ## 1. 核心分层
 
@@ -17,7 +17,36 @@ raw lat/lon -> tile_id -> region_id / zone_id
 
 这个边界的目标是让 replay outcome、热区报告、未来候选粗筛和机会成本估算可以共享同一套空间口径，同时不把项目提前拖进完整 GIS 或道路系统。
 
-## 2. 当前结论
+## 2. 空间网格路线选择
+
+当前已落地的是 Go preprocess 里的 `simpleTile(lon, lat, grid_cols)`：
+
+- 默认 100x100，兼容早期实验。
+- 已支持 100/200/400 多分辨率对照。
+- 编码简单：`tile_id = row * grid_cols + col`。
+- 优点是没有外部依赖、可解释、调试成本低。
+- 缺点是经纬度矩形网格存在面积变形，邻居和距离语义比专业地理网格弱。
+
+H3 是后续最值得讨论的升级路线，但当前还没有接入：
+
+- H3 更适合真实地理分析、层级 cell、邻居查询、热区聚合和供需流向。
+- H3 的 hex cell 比方格更适合做半径近似和空间平滑。
+- 引入 H3 会带来外部依赖、跨语言绑定和历史 CSV 兼容问题。
+- 如果接入，应先通过抽象层隔离，而不是把 H3 API 直接写进 replay 或 dispatch。
+
+建议的抽象边界：
+
+```text
+CellIndex
+  encode(lon, lat) -> cell_id
+  neighbors(cell_id) -> cell_id list
+  boundary(cell_id) -> polygon / bbox
+  parent(cell_id, resolution) -> cell_id
+```
+
+第一步可以让 `simpleTile` 实现这个接口；如果后续确认需要更真实的地理网格，再增加 H3 实现。地图瓦片、真实道路路由、OSM 中间件继续后置，不作为当前 region / heat 统计的前置条件。
+
+## 3. 当前结论
 
 第一阶段已经实现受约束 UF region map，但它不是完整自适应区域系统。仍然避免复杂动态区域，原因：
 
@@ -32,7 +61,7 @@ raw lat/lon -> tile_id -> region_id / zone_id
 fixed tile stats -> constrained UF region map -> region stats / flow matrix -> strategy research
 ```
 
-## 3. Region Map 原则
+## 4. Region Map 原则
 
 后续如果引入 region map，应满足：
 
@@ -63,9 +92,9 @@ approx_diagonal_km
 approx_area_km2
 ```
 
-这些字段按 Go `simpleTile()` 的 100x100 NYC 粗网格反推，不是道路距离，也不是司机真实行驶里程。它们用于审计 UF 合并结果的几何尺度，例如观察区域是否被拉成长条，或者是否出现过大的连通块。
+这些字段按 Go `simpleTile()` 的当前 grid cols 反推，不是道路距离，也不是司机真实行驶里程。默认兼容 100x100 NYC 粗网格；多分辨率实验会显式使用 `--tile-grid-cols 100/200/400` 对照同一批请求在不同 tile 粒度下的 region 尺度。它们用于审计 UF 合并结果的几何尺度，例如观察区域是否被拉成长条，或者是否出现过大的连通块。
 
-## 4. 后续路线
+## 5. 后续路线
 
 Phase 1: fixed tile stats
 
@@ -81,24 +110,33 @@ Phase 2: constrained UF region map
 - `k_sweep --region-map-csv` 输出 `tile_id,region_id`。
 - `k_sweep --region-stats-csv` 输出 region 聚合明细和 bbox km 粗估。
 
-Phase 3: region stats / flow matrix
+Phase 3: multi-resolution tile sweep
+
+- 当前实现路线：保留 100x100 作为 baseline，同时支持 `-tile-grid-cols 100,200,400`。
+- `tools/go_csv_preprocess -tile-grid-cols N` 只改变 tile id 编码，不改变 `requests.csv` / `drivers.csv` schema。
+- `k_sweep --tile-grid-cols N` 只影响 region map 的 row/col 反解和 bbox km 粗估，不改变 replay、candidate generation 或 MCMF 行为。
+- `tools/go_batch_experiments -tile-grid-cols 100,200,400` 会按 `normalized/grid_<N>/limit_<M>` 分目录保存 normalized CSV、`tile_stats.csv`、`region_map.csv` 和 `region_stats.csv`，并额外输出 `grid_<N>/summary.csv`；总表增加 `tile_grid_cols`。
+- `tools/go_experiment_summary` 会按 `tile_grid_cols` 分组，并在存在 `region_stats.csv` 时输出 `region_count`、`avg_region_tile_count`、`max_region_diag_km`、`avg_region_diag_km`、`max_region_area_km2`。
+- 这一阶段的判断目标是确认 region 过大来自 tile 太粗、UF 约束太松，还是高分辨率后热区过碎。
+
+Phase 4: region stats / flow matrix
 
 - 聚合 pickup/dropoff/free driver/completion/candidate coverage。
 - 输出 `region_stats.csv`。
 - 输出 `region_pickup -> region_dropoff` 的 flow matrix，用于观察潮汐和流向。
 
-Phase 4: constrained UF evolution
+Phase 5: constrained UF evolution
 
 - 后续再评估是否加入时间窗口、最小样本量、flow matrix 或 request outcome 指标。
 - 仍然不进入当前 dispatch 主干。
 
-Phase 5: strategy integration
+Phase 6: strategy integration
 
 - 先用于报告和候选覆盖审计。
 - 再考虑候选粗筛。
 - 最后才评估是否把 opportunity adjustment 接入 MCMF cost 或动态定价估算。
 
-## 5. 当前不做
+## 6. 当前不做
 
 - 不把 UF adaptive region 接入派单主线。
 - 不实现 Tarjan / SCC 区域缩点。
@@ -106,3 +144,4 @@ Phase 5: strategy integration
 - 不把 region 作为硬派单边界。
 - 不把区域机会成本写进 MCMF cost。
 - 不做真实道路、拥堵传播或完整格点路径规划。
+- 不在当前阶段引入地图瓦片服务器或真实路由中间件。

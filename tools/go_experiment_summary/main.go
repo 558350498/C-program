@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +60,11 @@ func run(opts options) error {
 		fmt.Println()
 	}
 	printRecommendations(groups, opts.minCompletionRate)
+	if hasColumn(groups, "tile_grid_cols") {
+		if err := printRegionScaleSummary(opts.inputPath, groups); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -97,6 +103,9 @@ func sortRows(rows []experimentRow) {
 		if rows[i].text("sample_limit") != rows[j].text("sample_limit") {
 			return rows[i].intValue("sample_limit") < rows[j].intValue("sample_limit")
 		}
+		if rows[i].text("tile_grid_cols") != rows[j].text("tile_grid_cols") {
+			return rows[i].intValue("tile_grid_cols") < rows[j].intValue("tile_grid_cols")
+		}
 		if rows[i].text("candidate_generation") != rows[j].text("candidate_generation") {
 			return rows[i].text("candidate_generation") < rows[j].text("candidate_generation")
 		}
@@ -110,8 +119,7 @@ func sortRows(rows []experimentRow) {
 func groupBySampleLimit(rows []experimentRow) map[string][]experimentRow {
 	groups := map[string][]experimentRow{}
 	for _, row := range rows {
-		limit := row.text("sample_limit")
-		groups[limit] = append(groups[limit], row)
+		groups[groupKey(row)] = append(groups[groupKey(row)], row)
 	}
 	return groups
 }
@@ -120,7 +128,7 @@ func printCompactRows(groups map[string][]experimentRow, maxRows int) {
 	limits := sortedKeys(groups)
 	includeZoneFixed := hasColumn(groups, "zone_fixed_completed_revenue")
 	for _, limit := range limits {
-		fmt.Printf("sample_limit=%s compact rows\n", limit)
+		fmt.Printf("%s compact rows\n", groupLabel(limit))
 		header := "mode,radius,k,completion,candidate_edges,avg_pickup,replay_ms,hot_completion,cold_completion,hot_coverage,cold_coverage,opportunity_avg"
 		if includeZoneFixed {
 			header += ",zone_fixed_completed_revenue,zone_fixed_net_delta,zone_fixed_avg_factor"
@@ -161,8 +169,12 @@ func printCompactRows(groups map[string][]experimentRow, maxRows int) {
 
 func printRecommendations(groups map[string][]experimentRow, minCompletionRate float64) {
 	includeZoneFixed := hasColumn(groups, "zone_fixed_completed_revenue")
+	includeTileGrid := hasColumn(groups, "tile_grid_cols")
 	fmt.Printf("recommendations min_completion_rate=%.4f\n", minCompletionRate)
 	header := "sample_limit,mode,radius,k,completion,candidate_edges,avg_pickup,replay_ms,hot_completion,cold_completion,hot_coverage,cold_coverage,opportunity_avg"
+	if includeTileGrid {
+		header = "sample_limit,tile_grid_cols,mode,radius,k,completion,candidate_edges,avg_pickup,replay_ms,hot_completion,cold_completion,hot_coverage,cold_coverage,opportunity_avg"
+	}
 	if includeZoneFixed {
 		header += ",zone_fixed_completed_revenue,zone_fixed_net_delta,zone_fixed_avg_factor"
 	}
@@ -170,7 +182,11 @@ func printRecommendations(groups map[string][]experimentRow, minCompletionRate f
 	for _, limit := range sortedKeys(groups) {
 		best, ok := chooseRecommendation(groups[limit], minCompletionRate)
 		if !ok {
-			fields := []string{limit, "no row meets completion threshold"}
+			fields := []string{groupSampleLimit(limit)}
+			if includeTileGrid {
+				fields = append(fields, groupTileGridCols(limit))
+			}
+			fields = append(fields, "no row meets completion threshold")
 			for len(fields) < strings.Count(header, ",")+1 {
 				fields = append(fields, "")
 			}
@@ -178,7 +194,12 @@ func printRecommendations(groups map[string][]experimentRow, minCompletionRate f
 			continue
 		}
 		fields := []string{
-			limit,
+			groupSampleLimit(limit),
+		}
+		if includeTileGrid {
+			fields = append(fields, groupTileGridCols(limit))
+		}
+		fields = append(fields,
 			best.text("candidate_generation"),
 			best.text("radius"),
 			best.text("k"),
@@ -191,7 +212,7 @@ func printRecommendations(groups map[string][]experimentRow, minCompletionRate f
 			best.text("hot_dropoff_candidate_coverage_rate"),
 			best.text("cold_dropoff_candidate_coverage_rate"),
 			best.text("opportunity_adjustment_avg"),
-		}
+		)
 		if includeZoneFixed {
 			fields = append(fields,
 				best.text("zone_fixed_completed_revenue"),
@@ -232,14 +253,164 @@ func sortedKeys(groups map[string][]experimentRow) []string {
 		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		left, leftErr := strconv.Atoi(keys[i])
-		right, rightErr := strconv.Atoi(keys[j])
-		if leftErr == nil && rightErr == nil {
-			return left < right
+		leftLimit, leftLimitErr := strconv.Atoi(groupSampleLimit(keys[i]))
+		rightLimit, rightLimitErr := strconv.Atoi(groupSampleLimit(keys[j]))
+		if leftLimitErr == nil && rightLimitErr == nil && leftLimit != rightLimit {
+			return leftLimit < rightLimit
+		}
+		leftGrid, leftGridErr := strconv.Atoi(groupTileGridCols(keys[i]))
+		rightGrid, rightGridErr := strconv.Atoi(groupTileGridCols(keys[j]))
+		if leftGridErr == nil && rightGridErr == nil && leftGrid != rightGrid {
+			return leftGrid < rightGrid
 		}
 		return keys[i] < keys[j]
 	})
 	return keys
+}
+
+func groupKey(row experimentRow) string {
+	limit := row.text("sample_limit")
+	grid := row.text("tile_grid_cols")
+	if grid == "" {
+		return limit
+	}
+	return limit + "|" + grid
+}
+
+func groupSampleLimit(key string) string {
+	parts := strings.SplitN(key, "|", 2)
+	return parts[0]
+}
+
+func groupTileGridCols(key string) string {
+	parts := strings.SplitN(key, "|", 2)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1]
+}
+
+func groupLabel(key string) string {
+	limit := groupSampleLimit(key)
+	grid := groupTileGridCols(key)
+	if grid == "" {
+		return fmt.Sprintf("sample_limit=%s", limit)
+	}
+	return fmt.Sprintf("sample_limit=%s tile_grid_cols=%s", limit, grid)
+}
+
+type regionScaleStats struct {
+	regionCount        int
+	avgRegionTileCount float64
+	maxRegionDiagKm    float64
+	avgRegionDiagKm    float64
+	maxRegionAreaKm2   float64
+}
+
+func printRegionScaleSummary(inputPath string, groups map[string][]experimentRow) error {
+	baseDir := filepath.Dir(filepath.FromSlash(inputPath))
+	printedHeader := false
+	for _, key := range sortedKeys(groups) {
+		limit := groupSampleLimit(key)
+		grid := groupTileGridCols(key)
+		if limit == "" || grid == "" {
+			continue
+		}
+		path := filepath.Join(baseDir, "normalized", "grid_"+grid, "limit_"+limit, "region_stats.csv")
+		stats, ok, err := loadRegionScaleStats(path)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		if !printedHeader {
+			fmt.Println()
+			fmt.Println("region scale summary")
+			fmt.Println("sample_limit,tile_grid_cols,region_count,avg_region_tile_count,max_region_diag_km,avg_region_diag_km,max_region_area_km2")
+			printedHeader = true
+		}
+		fmt.Println(strings.Join([]string{
+			limit,
+			grid,
+			strconv.Itoa(stats.regionCount),
+			formatFloat(stats.avgRegionTileCount),
+			formatFloat(stats.maxRegionDiagKm),
+			formatFloat(stats.avgRegionDiagKm),
+			formatFloat(stats.maxRegionAreaKm2),
+		}, ","))
+	}
+	return nil
+}
+
+func loadRegionScaleStats(path string) (regionScaleStats, bool, error) {
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return regionScaleStats{}, false, nil
+	}
+	if err != nil {
+		return regionScaleStats{}, false, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return regionScaleStats{}, false, fmt.Errorf("parse region stats %s: %w", path, err)
+	}
+	if len(records) < 2 {
+		return regionScaleStats{}, true, nil
+	}
+
+	index := make(map[string]int, len(records[0]))
+	for column, name := range records[0] {
+		index[strings.TrimSpace(name)] = column
+	}
+
+	var stats regionScaleStats
+	var tileCountTotal float64
+	var diagTotal float64
+	for rowNumber, record := range records[1:] {
+		tileCount, err := parseRegionFloat(index, record, "tile_count")
+		if err != nil {
+			return regionScaleStats{}, false, fmt.Errorf("%s row %d: %w", path, rowNumber+2, err)
+		}
+		diagKm, err := parseRegionFloat(index, record, "approx_diagonal_km")
+		if err != nil {
+			return regionScaleStats{}, false, fmt.Errorf("%s row %d: %w", path, rowNumber+2, err)
+		}
+		areaKm2, err := parseRegionFloat(index, record, "approx_area_km2")
+		if err != nil {
+			return regionScaleStats{}, false, fmt.Errorf("%s row %d: %w", path, rowNumber+2, err)
+		}
+		stats.regionCount++
+		tileCountTotal += tileCount
+		diagTotal += diagKm
+		if diagKm > stats.maxRegionDiagKm {
+			stats.maxRegionDiagKm = diagKm
+		}
+		if areaKm2 > stats.maxRegionAreaKm2 {
+			stats.maxRegionAreaKm2 = areaKm2
+		}
+	}
+
+	if stats.regionCount > 0 {
+		stats.avgRegionTileCount = tileCountTotal / float64(stats.regionCount)
+		stats.avgRegionDiagKm = diagTotal / float64(stats.regionCount)
+	}
+	return stats, true, nil
+}
+
+func parseRegionFloat(index map[string]int, record []string, name string) (float64, error) {
+	column, ok := index[name]
+	if !ok || column < 0 || column >= len(record) {
+		return 0, fmt.Errorf("missing column %s", name)
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(record[column]), 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse column %s=%q: %w", name, record[column], err)
+	}
+	return value, nil
 }
 
 func hasColumn(groups map[string][]experimentRow, name string) bool {
@@ -282,4 +453,8 @@ func kSortValue(value string) int {
 		return 0
 	}
 	return parsed
+}
+
+func formatFloat(value float64) string {
+	return strconv.FormatFloat(value, 'f', 6, 64)
 }

@@ -26,6 +26,7 @@ type options struct {
 	windowSeconds int64
 	driverEvery   int
 	driverRadius  float64
+	tileGridCols  int
 	seed          int64
 }
 
@@ -39,6 +40,7 @@ func main() {
 	flag.Int64Var(&opts.windowSeconds, "window-seconds", 0, "optional continuous pickup-time window to sample before applying -limit; <=0 disables windowing")
 	flag.IntVar(&opts.driverEvery, "driver-every", 2, "synthesize one driver for every N valid requests; 2 means about 0.5 driver per request")
 	flag.Float64Var(&opts.driverRadius, "driver-radius", 0.003, "random driver offset radius around pickup point in lon/lat degrees")
+	flag.IntVar(&opts.tileGridCols, "tile-grid-cols", 100, "number of columns/rows for simple tile encoding")
 	flag.Int64Var(&opts.seed, "seed", 20260503, "random seed for synthesized drivers")
 	flag.Parse()
 
@@ -53,6 +55,9 @@ func main() {
 	}
 	if opts.windowSeconds < 0 {
 		fatalf("-window-seconds must be non-negative")
+	}
+	if opts.tileGridCols <= 0 {
+		fatalf("-tile-grid-cols must be positive")
 	}
 
 	if err := convertRequestsAndDrivers(opts); err != nil {
@@ -137,7 +142,7 @@ func convertRequestsAndDrivers(opts options) error {
 		rowNumber++
 
 		row := makeRow(header, record)
-		request, err := normalizeRequest(row, rowNumber)
+		request, err := normalizeRequest(row, rowNumber, opts.tileGridCols)
 		if err != nil {
 			continue
 		}
@@ -199,7 +204,7 @@ func convertRequestsAndDrivers(opts options) error {
 		written++
 
 		if shouldSynthesizeDriver(written, opts.driverEvery) {
-			driver := synthesizeDriver(request, driversWritten+1, opts.driverRadius, rng)
+			driver := synthesizeDriver(request, driversWritten+1, opts.driverRadius, opts.tileGridCols, rng)
 			if err := driversWriter.Write(driver.csvRecord()); err != nil {
 				return err
 			}
@@ -309,7 +314,7 @@ func shouldSynthesizeDriver(validRequestIndex int, driverEvery int) bool {
 	return (validRequestIndex-1)%driverEvery == 0
 }
 
-func synthesizeDriver(request normalizedRequest, taxiID int, radius float64, rng *rand.Rand) normalizedDriver {
+func synthesizeDriver(request normalizedRequest, taxiID int, radius float64, tileGridCols int, rng *rand.Rand) normalizedDriver {
 	x, y := randomPointInRadius(request.pickupX, request.pickupY, radius, rng)
 	if !validNYCCoordinate(x, y) {
 		x = request.pickupX
@@ -320,7 +325,7 @@ func synthesizeDriver(request normalizedRequest, taxiID int, radius float64, rng
 		taxiID:        taxiID,
 		x:             x,
 		y:             y,
-		tile:          simpleTile(x, y),
+		tile:          simpleTile(x, y, tileGridCols),
 		availableTime: 0,
 		status:        "free",
 	}
@@ -336,7 +341,7 @@ func randomPointInRadius(centerX, centerY, radius float64, rng *rand.Rand) (floa
 	return centerX + math.Cos(angle)*distance, centerY + math.Sin(angle)*distance
 }
 
-func normalizeRequest(row csvRow, rowNumber int) (normalizedRequest, error) {
+func normalizeRequest(row csvRow, rowNumber int, tileGridCols int) (normalizedRequest, error) {
 	pickupTime, err := parseTaxiTime(first(row, "pickup_datetime", "tpep_pickup_datetime", "lpep_pickup_datetime"))
 	if err != nil {
 		return normalizedRequest{}, err
@@ -378,8 +383,8 @@ func normalizeRequest(row csvRow, rowNumber int) (normalizedRequest, error) {
 		pickupY:     pickupY,
 		dropoffX:    dropoffX,
 		dropoffY:    dropoffY,
-		pickupTile:  simpleTile(pickupX, pickupY),
-		dropoffTile: simpleTile(dropoffX, dropoffY),
+		pickupTile:  simpleTile(pickupX, pickupY, tileGridCols),
+		dropoffTile: simpleTile(dropoffX, dropoffY, tileGridCols),
 		pickupTime:  pickupTime,
 	}, nil
 }
@@ -467,15 +472,14 @@ func validNYCCoordinate(lon, lat float64) bool {
 	return lon >= -75.0 && lon <= -72.0 && lat >= 40.0 && lat <= 42.0
 }
 
-func simpleTile(lon, lat float64) int {
-	const cols = 100
+func simpleTile(lon, lat float64, cols int) int {
 	const minLon = -75.0
 	const maxLon = -72.0
 	const minLat = 40.0
 	const maxLat = 42.0
 
-	col := int((lon - minLon) / (maxLon - minLon) * cols)
-	row := int((lat - minLat) / (maxLat - minLat) * cols)
+	col := int((lon - minLon) / (maxLon - minLon) * float64(cols))
+	row := int((lat - minLat) / (maxLat - minLat) * float64(cols))
 	if col < 0 {
 		col = 0
 	}

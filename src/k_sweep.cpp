@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -15,6 +16,7 @@
 #include <cmath>
 #include <sstream>
 #include <string>
+#include <chrono>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +36,7 @@ struct CliOptions {
   std::string tile_stats_csv_path;
   std::string region_map_csv_path;
   std::string region_stats_csv_path;
+  int tile_grid_cols = 100;
   TimeSeconds start_time = 0;
   TimeSeconds end_time = 0;
   bool end_time_set = false;
@@ -86,6 +89,7 @@ void print_usage(const char *program) {
       << "  --tile-stats-csv PATH           write tile/grid side-table CSV\n"
       << "  --region-map-csv PATH           write tile-to-region CSV\n"
       << "  --region-stats-csv PATH         write region aggregate CSV\n"
+      << "  --tile-grid-cols N              tile grid columns/rows, default 100\n"
       << "  --start-time SECONDS            replay start time, default 0\n"
       << "  --end-time SECONDS              replay end time, default auto\n"
       << "  --batch-interval SECONDS        batch interval, default 30\n"
@@ -210,6 +214,13 @@ CliOptions parse_cli(int argc, char **argv) {
       options.region_map_csv_path = require_value(index, argc, argv);
     } else if (arg == "--region-stats-csv") {
       options.region_stats_csv_path = require_value(index, argc, argv);
+    } else if (arg == "--tile-grid-cols") {
+      const std::size_t value =
+          parse_size_value(require_value(index, argc, argv), arg);
+      if (value > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid --tile-grid-cols");
+      }
+      options.tile_grid_cols = static_cast<int>(value);
     } else if (arg == "--start-time") {
       options.start_time =
           parse_time_value(require_value(index, argc, argv), arg);
@@ -258,6 +269,9 @@ CliOptions parse_cli(int argc, char **argv) {
   }
   if (options.hot_dropoff_discount < 0.0) {
     throw std::runtime_error("--hot-dropoff-discount must be non-negative");
+  }
+  if (options.tile_grid_cols <= 0) {
+    throw std::runtime_error("--tile-grid-cols must be positive");
   }
   return options;
 }
@@ -312,6 +326,13 @@ double average_pickup_cost(const HotColdGroup &group) {
   }
   return static_cast<double>(group.pickup_cost_total) /
          static_cast<double>(group.assigned);
+}
+
+double elapsed_ms(std::chrono::steady_clock::time_point start,
+                  std::chrono::steady_clock::time_point end) {
+  return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+             end - start)
+      .count();
 }
 
 void add_group_request(HotColdGroup &group, const PassengerRequest &request,
@@ -448,6 +469,11 @@ void write_tile_stats_csv(const std::string &path,
   if (path.empty()) {
     return;
   }
+  const std::filesystem::path output_path(path);
+  const std::filesystem::path parent_path = output_path.parent_path();
+  if (!parent_path.empty()) {
+    std::filesystem::create_directories(parent_path);
+  }
   std::ofstream output(path);
   if (!output) {
     throw std::runtime_error("failed to open --tile-stats-csv path: " + path);
@@ -463,6 +489,11 @@ void write_region_map_csv(const std::string &path,
   if (path.empty()) {
     return;
   }
+  const std::filesystem::path output_path(path);
+  const std::filesystem::path parent_path = output_path.parent_path();
+  if (!parent_path.empty()) {
+    std::filesystem::create_directories(parent_path);
+  }
   std::ofstream output(path);
   if (!output) {
     throw std::runtime_error("failed to open --region-map-csv path: " + path);
@@ -477,6 +508,11 @@ void write_region_stats_csv(const std::string &path,
                             const TileRegionMap &region_map) {
   if (path.empty()) {
     return;
+  }
+  const std::filesystem::path output_path(path);
+  const std::filesystem::path parent_path = output_path.parent_path();
+  if (!parent_path.empty()) {
+    std::filesystem::create_directories(parent_path);
   }
   std::ofstream output(path);
   if (!output) {
@@ -525,7 +561,18 @@ int main(int argc, char **argv) {
     write_tile_stats_csv(cli_options.tile_stats_csv_path, tile_stats);
     if (!cli_options.region_map_csv_path.empty() ||
         !cli_options.region_stats_csv_path.empty()) {
-      const TileRegionMap region_map = build_tile_region_map(tile_stats);
+      TileRegionMapOptions region_options;
+      region_options.grid_cols = cli_options.tile_grid_cols;
+      const auto region_build_start = std::chrono::steady_clock::now();
+      const TileRegionMap region_map =
+          build_tile_region_map(tile_stats, region_options);
+      const auto region_build_end = std::chrono::steady_clock::now();
+      std::cerr << std::fixed << std::setprecision(3)
+                << "region_build_ms="
+                << elapsed_ms(region_build_start, region_build_end)
+                << " tile_grid_cols=" << cli_options.tile_grid_cols
+                << " tile_entries=" << region_map.tile_entries().size()
+                << " regions=" << region_map.region_entries().size() << '\n';
       write_region_map_csv(cli_options.region_map_csv_path, region_map);
       write_region_stats_csv(cli_options.region_stats_csv_path, region_map);
     }

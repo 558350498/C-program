@@ -263,8 +263,9 @@ bool is_valid_region_tile(TileId tile_id,
   if (options.grid_cols <= 0) {
     return false;
   }
-  const int max_tile_count = options.grid_cols * options.grid_cols;
-  return tile_id >= 0 && tile_id < max_tile_count;
+  const long long grid_cols = options.grid_cols;
+  const long long max_tile_count = grid_cols * grid_cols;
+  return tile_id >= 0 && static_cast<long long>(tile_id) < max_tile_count;
 }
 
 int tile_region_row(TileId tile_id, const TileRegionMapOptions &options) {
