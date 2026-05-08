@@ -1,6 +1,7 @@
 #include "dispatch_replay.h"
 #include "dispatch_replay_io.h"
 #include "tile_grid_stats.h"
+#include "tile_region_map.h"
 
 #include <algorithm>
 #include <cctype>
@@ -31,6 +32,8 @@ struct CliOptions {
   std::string requests_path = "data/normalized/requests.csv";
   std::string drivers_path = "data/normalized/drivers.csv";
   std::string tile_stats_csv_path;
+  std::string region_map_csv_path;
+  std::string region_stats_csv_path;
   TimeSeconds start_time = 0;
   TimeSeconds end_time = 0;
   bool end_time_set = false;
@@ -81,6 +84,8 @@ void print_usage(const char *program) {
       << "  --requests PATH                 normalized requests.csv path\n"
       << "  --drivers PATH                  normalized drivers.csv path\n"
       << "  --tile-stats-csv PATH           write tile/grid side-table CSV\n"
+      << "  --region-map-csv PATH           write tile-to-region CSV\n"
+      << "  --region-stats-csv PATH         write region aggregate CSV\n"
       << "  --start-time SECONDS            replay start time, default 0\n"
       << "  --end-time SECONDS              replay end time, default auto\n"
       << "  --batch-interval SECONDS        batch interval, default 30\n"
@@ -201,6 +206,10 @@ CliOptions parse_cli(int argc, char **argv) {
       options.drivers_path = require_value(index, argc, argv);
     } else if (arg == "--tile-stats-csv") {
       options.tile_stats_csv_path = require_value(index, argc, argv);
+    } else if (arg == "--region-map-csv") {
+      options.region_map_csv_path = require_value(index, argc, argv);
+    } else if (arg == "--region-stats-csv") {
+      options.region_stats_csv_path = require_value(index, argc, argv);
     } else if (arg == "--start-time") {
       options.start_time =
           parse_time_value(require_value(index, argc, argv), arg);
@@ -449,6 +458,37 @@ void write_tile_stats_csv(const std::string &path,
   }
 }
 
+void write_region_map_csv(const std::string &path,
+                          const TileRegionMap &region_map) {
+  if (path.empty()) {
+    return;
+  }
+  std::ofstream output(path);
+  if (!output) {
+    throw std::runtime_error("failed to open --region-map-csv path: " + path);
+  }
+  output << format_tile_region_map_csv(region_map);
+  if (!output) {
+    throw std::runtime_error("failed to write --region-map-csv path: " + path);
+  }
+}
+
+void write_region_stats_csv(const std::string &path,
+                            const TileRegionMap &region_map) {
+  if (path.empty()) {
+    return;
+  }
+  std::ofstream output(path);
+  if (!output) {
+    throw std::runtime_error("failed to open --region-stats-csv path: " + path);
+  }
+  output << format_tile_region_stats_csv(region_map);
+  if (!output) {
+    throw std::runtime_error("failed to write --region-stats-csv path: " +
+                             path);
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -483,6 +523,12 @@ int main(int argc, char **argv) {
     const TileGridStats tile_stats =
         build_tile_grid_stats(request_result.requests, driver_result.drivers);
     write_tile_stats_csv(cli_options.tile_stats_csv_path, tile_stats);
+    if (!cli_options.region_map_csv_path.empty() ||
+        !cli_options.region_stats_csv_path.empty()) {
+      const TileRegionMap region_map = build_tile_region_map(tile_stats);
+      write_region_map_csv(cli_options.region_map_csv_path, region_map);
+      write_region_stats_csv(cli_options.region_stats_csv_path, region_map);
+    }
 
     DispatchReplaySimulator simulator;
     print_csv_header();

@@ -14,6 +14,7 @@ add_library(
   src/dispatch_replay_io.cpp
   src/kd_tree_spatial_index.cpp
   src/tile_grid_stats.cpp
+  src/tile_region_map.cpp
   src/dispatch_strategy.cpp
   src/mcmf_batch_strategy.cpp
   src/requestcontext.cpp
@@ -49,6 +50,9 @@ if(BUILD_TESTING)
   add_executable(tile_grid_stats_test tests/tile_grid_stats_test.cpp)
   target_link_libraries(tile_grid_stats_test PRIVATE taxi_core)
 
+  add_executable(tile_region_map_test tests/tile_region_map_test.cpp)
+  target_link_libraries(tile_region_map_test PRIVATE taxi_core)
+
   add_executable(mcmf_batch_strategy_test tests/mcmf_batch_strategy_test.cpp)
   target_link_libraries(mcmf_batch_strategy_test PRIVATE taxi_core)
 
@@ -66,6 +70,7 @@ if(BUILD_TESTING)
   add_test(NAME dispatch_strategy_test COMMAND dispatch_strategy_test)
   add_test(NAME dispatch_batch_test COMMAND dispatch_batch_test)
   add_test(NAME tile_grid_stats_test COMMAND tile_grid_stats_test)
+  add_test(NAME tile_region_map_test COMMAND tile_region_map_test)
   add_test(NAME mcmf_batch_strategy_test COMMAND mcmf_batch_strategy_test)
   add_test(NAME dispatch_replay_test COMMAND dispatch_replay_test)
   add_test(NAME dispatch_replay_io_test COMMAND dispatch_replay_io_test)
@@ -81,6 +86,8 @@ if(BUILD_TESTING)
   set_tests_properties(dispatch_batch_test PROPERTIES LABELS "smoke;batch")
   set_tests_properties(tile_grid_stats_test PROPERTIES LABELS
                                                        "smoke;tile-grid")
+  set_tests_properties(tile_region_map_test PROPERTIES LABELS
+                                                       "smoke;tile-grid;region")
   set_tests_properties(mcmf_batch_strategy_test PROPERTIES LABELS
                                                        "smoke;batch;mcmf")
   set_tests_properties(dispatch_replay_test PROPERTIES LABELS
@@ -97,14 +104,15 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:dispatch_strategy_test>
     COMMAND $<TARGET_FILE:dispatch_batch_test>
     COMMAND $<TARGET_FILE:tile_grid_stats_test>
+    COMMAND $<TARGET_FILE:tile_region_map_test>
     COMMAND $<TARGET_FILE:mcmf_batch_strategy_test>
     COMMAND $<TARGET_FILE:dispatch_replay_test>
     COMMAND $<TARGET_FILE:dispatch_replay_io_test>
     COMMAND $<TARGET_FILE:taxi_system_test>
     COMMAND $<TARGET_FILE:taxi_demo>
     DEPENDS kd_tree_spatial_index_test requestcontext_test dispatch_strategy_test
-            dispatch_batch_test tile_grid_stats_test mcmf_batch_strategy_test
-            dispatch_replay_test dispatch_replay_io_test taxi_system_test
-            taxi_demo
+            dispatch_batch_test tile_grid_stats_test tile_region_map_test
+            mcmf_batch_strategy_test dispatch_replay_test
+            dispatch_replay_io_test taxi_system_test taxi_demo
     USES_TERMINAL)
 endif()

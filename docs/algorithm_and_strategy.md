@@ -305,12 +305,45 @@ opportunity_adjustment =
 - `cold_dropoff_avg_pickup_cost`
 - `opportunity_adjustment_avg`
 
+### Hot/Cold 固定单价验证
+
+为了验证“只看热冷区域、不看公里数”的极端定价方向，`go_experiments` 增加了 `-zone-fixed-pricing` 报表模式。这不是正式定价策略，只是压力测试一个很窄的假设：
+
+```text
+hot pickup -> hot dropoff   = base_fare * hot_hot_factor
+cold pickup -> cold dropoff = base_fare * cold_cold_factor
+other combinations          = base_fare
+```
+
+默认参数：
+
+```text
+zone_fixed_base_fare = 1.0
+hot_hot_factor = 1.2
+cold_cold_factor = 0.8
+```
+
+这个模式完全移除公里数影响：
+
+```text
+zone_fixed_possible_revenue =
+  sum(zone_fixed_base_fare * zone_factor over all requests)
+
+zone_fixed_completed_revenue =
+  zone_fixed_possible_revenue * completion_rate
+
+zone_fixed_net_delta =
+  zone_fixed_completed_revenue - estimated_completed_revenue
+```
+
+第一版不扣接驾成本，不建模需求流失，也不影响 dispatch。它只回答一个问题：如果价格只由热冷组合决定，收入量级和原距离收入相比会偏到什么程度。
+
 ## 8. 当前工程状态
 
 当前已落地：
 
 - `k_sweep`：扫描候选集规模和半径。
-- `go_experiments`：补充供需比、订单里程收入、接驾成本、热点调价和粗略净收入。
+- `go_experiments`：补充供需比、订单里程收入、接驾成本、热点调价、hot/cold 固定单价验证和粗略净收入。
 - KD-Tree 侧表化查询：`radius_query / nearest_k -> id + distance_sq`。
 - indexed 候选边对照路径：通过 KD-Tree 查询司机 id，再从 side table 取 `DriverSnapshot`。
 - replay per-request outcome：记录候选边覆盖、派单、完成、等待和接驾成本。

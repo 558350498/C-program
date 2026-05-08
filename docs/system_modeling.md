@@ -152,6 +152,7 @@ tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
 - taxi、request、heat 等业务字段放在外部 side table。
 - 后续热区统计和格点地图不应直接把业务对象塞进 KD-Tree node。
 - 下一阶段优先做轻量 tile/grid side table，而不是完整道路级格点地图。tile/grid 先服务于热区统计、冷区识别、机会成本和候选粗筛；真实路网、路径规划和拥堵传播继续后置。
+- region / zone 是 tile 之上的慢变解释层，具体边界见 `docs/region_design.md`。当前 `tile_region_map` 已提供受约束离线 UF 原型，但不把 region 作为派单硬边界，也不每个 batch 动态重划。
 
 当前热区原型使用 pickup tile 频次作为轻量 heat side table：
 
@@ -199,6 +200,8 @@ opportunity_adjustment =
 - Redis 或外部数据库。
 - cgo / C++ dll。
 - 把 Kaggle raw 字段耦合进 C++ 核心。
+- Tarjan / SCC 区域缩点。
+- 将 UF region map 接入派单硬边界或 MCMF cost。
 
 这些都可以以后做，但不应该阻塞当前离线 replay 主线。
 

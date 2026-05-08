@@ -36,6 +36,10 @@ type options struct {
 	priceCap               float64
 	coldDropoffPenalty     float64
 	hotDropoffDiscount     float64
+	zoneFixedPricing       bool
+	zoneFixedBaseFare      float64
+	hotHotFactor           float64
+	coldColdFactor         float64
 }
 
 type normalizedPaths struct {
@@ -68,6 +72,10 @@ func main() {
 	flag.Float64Var(&opts.priceCap, "price-cap", 1.8, "maximum hotspot price factor")
 	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "opportunity cold dropoff penalty passed to k_sweep")
 	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "opportunity hot dropoff discount passed to k_sweep")
+	flag.BoolVar(&opts.zoneFixedPricing, "zone-fixed-pricing", false, "estimate fixed per-trip pricing by hot/cold pickup/dropoff zones")
+	flag.Float64Var(&opts.zoneFixedBaseFare, "zone-fixed-base-fare", 1.0, "base fare for zone-fixed pricing")
+	flag.Float64Var(&opts.hotHotFactor, "hot-hot-factor", 1.2, "zone-fixed factor for hot pickup to hot dropoff")
+	flag.Float64Var(&opts.coldColdFactor, "cold-cold-factor", 0.8, "zone-fixed factor for cold pickup to cold dropoff")
 	flag.Parse()
 
 	if err := run(opts); err != nil {
@@ -102,6 +110,15 @@ func run(opts options) error {
 	}
 	if opts.hotDropoffDiscount < 0 {
 		return fmt.Errorf("-hot-dropoff-discount must be non-negative")
+	}
+	if opts.zoneFixedBaseFare < 0 {
+		return fmt.Errorf("-zone-fixed-base-fare must be non-negative")
+	}
+	if opts.hotHotFactor <= 0 {
+		return fmt.Errorf("-hot-hot-factor must be positive")
+	}
+	if opts.coldColdFactor <= 0 {
+		return fmt.Errorf("-cold-cold-factor must be positive")
 	}
 	if opts.outputCSV == "" {
 		opts.outputCSV = filepath.Join(opts.outputDir, "summary.csv")
@@ -241,6 +258,12 @@ func runExperiment(opts options, experimentsDir string, kSweepPath string, paths
 		"-price-cap", strconv.FormatFloat(opts.priceCap, 'f', -1, 64),
 		"-cold-dropoff-penalty", strconv.FormatFloat(opts.coldDropoffPenalty, 'f', -1, 64),
 		"-hot-dropoff-discount", strconv.FormatFloat(opts.hotDropoffDiscount, 'f', -1, 64),
+		"-zone-fixed-base-fare", strconv.FormatFloat(opts.zoneFixedBaseFare, 'f', -1, 64),
+		"-hot-hot-factor", strconv.FormatFloat(opts.hotHotFactor, 'f', -1, 64),
+		"-cold-cold-factor", strconv.FormatFloat(opts.coldColdFactor, 'f', -1, 64),
+	}
+	if opts.zoneFixedPricing {
+		args = append(args, "-zone-fixed-pricing")
 	}
 	if mode == "indexed" {
 		args = append(args, "-indexed-candidates")

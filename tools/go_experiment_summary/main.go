@@ -118,16 +118,21 @@ func groupBySampleLimit(rows []experimentRow) map[string][]experimentRow {
 
 func printCompactRows(groups map[string][]experimentRow, maxRows int) {
 	limits := sortedKeys(groups)
+	includeZoneFixed := hasColumn(groups, "zone_fixed_completed_revenue")
 	for _, limit := range limits {
 		fmt.Printf("sample_limit=%s compact rows\n", limit)
-		fmt.Println("mode,radius,k,completion,candidate_edges,avg_pickup,replay_ms,hot_completion,cold_completion,hot_coverage,cold_coverage,opportunity_avg")
+		header := "mode,radius,k,completion,candidate_edges,avg_pickup,replay_ms,hot_completion,cold_completion,hot_coverage,cold_coverage,opportunity_avg"
+		if includeZoneFixed {
+			header += ",zone_fixed_completed_revenue,zone_fixed_net_delta,zone_fixed_avg_factor"
+		}
+		fmt.Println(header)
 		rows := groups[limit]
 		for index, row := range rows {
 			if index >= maxRows {
 				fmt.Printf("... %d more rows\n", len(rows)-index)
 				break
 			}
-			fmt.Printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+			fields := []string{
 				row.text("candidate_generation"),
 				row.text("radius"),
 				row.text("k"),
@@ -140,22 +145,39 @@ func printCompactRows(groups map[string][]experimentRow, maxRows int) {
 				row.text("hot_dropoff_candidate_coverage_rate"),
 				row.text("cold_dropoff_candidate_coverage_rate"),
 				row.text("opportunity_adjustment_avg"),
-			)
+			}
+			if includeZoneFixed {
+				fields = append(fields,
+					row.text("zone_fixed_completed_revenue"),
+					row.text("zone_fixed_net_delta"),
+					row.text("zone_fixed_avg_factor"),
+				)
+			}
+			fmt.Println(strings.Join(fields, ","))
 		}
 		fmt.Println()
 	}
 }
 
 func printRecommendations(groups map[string][]experimentRow, minCompletionRate float64) {
+	includeZoneFixed := hasColumn(groups, "zone_fixed_completed_revenue")
 	fmt.Printf("recommendations min_completion_rate=%.4f\n", minCompletionRate)
-	fmt.Println("sample_limit,mode,radius,k,completion,candidate_edges,avg_pickup,replay_ms,hot_completion,cold_completion,hot_coverage,cold_coverage,opportunity_avg")
+	header := "sample_limit,mode,radius,k,completion,candidate_edges,avg_pickup,replay_ms,hot_completion,cold_completion,hot_coverage,cold_coverage,opportunity_avg"
+	if includeZoneFixed {
+		header += ",zone_fixed_completed_revenue,zone_fixed_net_delta,zone_fixed_avg_factor"
+	}
+	fmt.Println(header)
 	for _, limit := range sortedKeys(groups) {
 		best, ok := chooseRecommendation(groups[limit], minCompletionRate)
 		if !ok {
-			fmt.Printf("%s,no row meets completion threshold,,,,,,,,,,,\n", limit)
+			fields := []string{limit, "no row meets completion threshold"}
+			for len(fields) < strings.Count(header, ",")+1 {
+				fields = append(fields, "")
+			}
+			fmt.Println(strings.Join(fields, ","))
 			continue
 		}
-		fmt.Printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+		fields := []string{
 			limit,
 			best.text("candidate_generation"),
 			best.text("radius"),
@@ -169,7 +191,15 @@ func printRecommendations(groups map[string][]experimentRow, minCompletionRate f
 			best.text("hot_dropoff_candidate_coverage_rate"),
 			best.text("cold_dropoff_candidate_coverage_rate"),
 			best.text("opportunity_adjustment_avg"),
-		)
+		}
+		if includeZoneFixed {
+			fields = append(fields,
+				best.text("zone_fixed_completed_revenue"),
+				best.text("zone_fixed_net_delta"),
+				best.text("zone_fixed_avg_factor"),
+			)
+		}
+		fmt.Println(strings.Join(fields, ","))
 	}
 }
 
@@ -210,6 +240,17 @@ func sortedKeys(groups map[string][]experimentRow) []string {
 		return keys[i] < keys[j]
 	})
 	return keys
+}
+
+func hasColumn(groups map[string][]experimentRow, name string) bool {
+	for _, rows := range groups {
+		for _, row := range rows {
+			if _, ok := row.values[name]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r experimentRow) text(name string) string {

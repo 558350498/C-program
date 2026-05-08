@@ -36,6 +36,10 @@ type options struct {
 	priceCap               float64
 	coldDropoffPenalty     float64
 	hotDropoffDiscount     float64
+	zoneFixedPricing       bool
+	zoneFixedBaseFare      float64
+	hotHotFactor           float64
+	coldColdFactor         float64
 }
 
 type requestRow struct {
@@ -58,6 +62,16 @@ type hotspotStats struct {
 	coldDropoffRate        float64
 }
 
+type zoneFixedStats struct {
+	hotHotRequests      int
+	coldColdRequests    int
+	neutralZoneRequests int
+	avgFactor           float64
+	possibleRevenue     float64
+	completedRevenue    float64
+	netDelta            float64
+}
+
 func main() {
 	var opts options
 	flag.StringVar(&opts.requestsPath, "requests", "../../data/normalized/requests.csv", "normalized requests.csv path")
@@ -76,6 +90,10 @@ func main() {
 	flag.Float64Var(&opts.priceCap, "price-cap", 1.8, "maximum hotspot price factor")
 	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "opportunity cold dropoff penalty passed to k_sweep")
 	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "opportunity hot dropoff discount passed to k_sweep")
+	flag.BoolVar(&opts.zoneFixedPricing, "zone-fixed-pricing", false, "estimate fixed per-trip pricing by hot/cold pickup/dropoff zones")
+	flag.Float64Var(&opts.zoneFixedBaseFare, "zone-fixed-base-fare", 1.0, "base fare for zone-fixed pricing")
+	flag.Float64Var(&opts.hotHotFactor, "hot-hot-factor", 1.2, "zone-fixed factor for hot pickup to hot dropoff")
+	flag.Float64Var(&opts.coldColdFactor, "cold-cold-factor", 0.8, "zone-fixed factor for cold pickup to cold dropoff")
 	flag.Parse()
 
 	if err := run(opts); err != nil {
@@ -108,6 +126,15 @@ func run(opts options) error {
 	}
 	if opts.hotDropoffDiscount < 0 {
 		return fmt.Errorf("-hot-dropoff-discount must be non-negative")
+	}
+	if opts.zoneFixedBaseFare < 0 {
+		return fmt.Errorf("-zone-fixed-base-fare must be non-negative")
+	}
+	if opts.hotHotFactor <= 0 {
+		return fmt.Errorf("-hot-hot-factor must be positive")
+	}
+	if opts.coldColdFactor <= 0 {
+		return fmt.Errorf("-cold-cold-factor must be positive")
 	}
 
 	requests, err := loadRequests(opts.requestsPath)
@@ -145,6 +172,20 @@ func run(opts options) error {
 		"global_hot_dropoff_rate",
 		"global_cold_dropoff_rate",
 	)
+	if opts.zoneFixedPricing {
+		header = append(header,
+			"zone_fixed_base_fare",
+			"hot_hot_factor",
+			"cold_cold_factor",
+			"hot_hot_requests",
+			"cold_cold_requests",
+			"neutral_zone_requests",
+			"zone_fixed_avg_factor",
+			"zone_fixed_possible_revenue",
+			"zone_fixed_completed_revenue",
+			"zone_fixed_net_delta",
+		)
+	}
 	if opts.hotspotTrials > 0 {
 		header = append(header,
 			"trial",
@@ -213,6 +254,23 @@ func run(opts options) error {
 			formatFloat(stats.hotDropoffRate),
 			formatFloat(stats.coldDropoffRate),
 		)
+		if opts.zoneFixedPricing {
+			zoneStats := zoneFixedRevenue(requests, hotspot, completionRate,
+				estimatedCompletedRevenue, opts.zoneFixedBaseFare,
+				opts.hotHotFactor, opts.coldColdFactor)
+			baseOutput = append(baseOutput,
+				formatFloat(opts.zoneFixedBaseFare),
+				formatFloat(opts.hotHotFactor),
+				formatFloat(opts.coldColdFactor),
+				strconv.Itoa(zoneStats.hotHotRequests),
+				strconv.Itoa(zoneStats.coldColdRequests),
+				strconv.Itoa(zoneStats.neutralZoneRequests),
+				formatFloat(zoneStats.avgFactor),
+				formatFloat(zoneStats.possibleRevenue),
+				formatFloat(zoneStats.completedRevenue),
+				formatFloat(zoneStats.netDelta),
+			)
+		}
 
 		if opts.hotspotTrials == 0 {
 			if err := writer.Write(baseOutput); err != nil {
@@ -504,6 +562,39 @@ func hotspotRevenue(requests []requestRow, table hotspotSideTable, farePerKm flo
 		return 0.0, 0.0, 0.0
 	}
 	return totalRevenue * completionRate, totalFactor / float64(len(requests)), maxFactor
+}
+
+func zoneFixedRevenue(requests []requestRow, table hotspotSideTable, completionRate float64, baselineCompletedRevenue float64, baseFare float64, hotHotFactor float64, coldColdFactor float64) zoneFixedStats {
+	stats := zoneFixedStats{}
+	if len(requests) == 0 {
+		stats.netDelta = -baselineCompletedRevenue
+		return stats
+	}
+
+	totalFactor := 0.0
+	for _, request := range requests {
+		pickupHeat := normalizedHeat(table.pickupHeatByTile[request.pickupTile], table.maxPickupHeat)
+		dropoffHeat := normalizedHeat(table.pickupHeatByTile[request.dropoffTile], table.maxPickupHeat)
+
+		factor := 1.0
+		if pickupHeat >= hotspotThreshold && dropoffHeat >= hotspotThreshold {
+			factor = hotHotFactor
+			stats.hotHotRequests++
+		} else if pickupHeat <= coldspotThreshold && dropoffHeat <= coldspotThreshold {
+			factor = coldColdFactor
+			stats.coldColdRequests++
+		} else {
+			stats.neutralZoneRequests++
+		}
+
+		totalFactor += factor
+		stats.possibleRevenue += baseFare * factor
+	}
+
+	stats.avgFactor = totalFactor / float64(len(requests))
+	stats.completedRevenue = stats.possibleRevenue * completionRate
+	stats.netDelta = stats.completedRevenue - baselineCompletedRevenue
+	return stats
 }
 
 func clamp(value float64, minValue float64, maxValue float64) float64 {

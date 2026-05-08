@@ -8,7 +8,8 @@
 2. `docs/system_modeling.md`
 3. `docs/timeline_model.md`
 4. `docs/algorithm_and_strategy.md`
-5. `plan/dispatch_next_steps.md`
+5. `docs/region_design.md`
+6. `plan/dispatch_next_steps.md`
 
 ## 模块索引
 
@@ -230,6 +231,39 @@
 - `src/tile_grid_stats.cpp`
 - `tests/tile_grid_stats_test.cpp`
 
+### Tile Region Map
+
+受约束离线 UF region map 原型。输入 `TileGridStats`，输出稳定的 `tile_id -> region_id` 和 region 聚合明细；只用于统计和审计，不影响 dispatch、MCMF cost 或候选生成。
+
+`region_stats.csv` 会额外输出 bbox 粗略公里尺度：`approx_width_km`、`approx_height_km`、`approx_diagonal_km`、`approx_area_km2`。这些是按 Go `simpleTile()` 的 100x100 NYC 网格估算的几何距离，不是真实路网距离。
+
+核心类型：
+
+- `TileRegionMap`
+- `TileRegionMapOptions`
+- `TileRegionMapEntry`
+- `TileRegionStatsEntry`
+
+核心入口：
+
+- `build_tile_region_map`
+- `format_tile_region_map_csv`
+- `format_tile_region_stats_csv`
+
+位置：
+
+- `include/tile_region_map.h`
+- `src/tile_region_map.cpp`
+- `tests/tile_region_map_test.cpp`
+
+### Region Design
+
+区域设计文档，记录 tile / region / heat 的边界：tile 是事实层，region 是慢变解释层，heat/cold 是快变状态。当前已有受约束离线 UF 原型，但不接派单主线。
+
+位置：
+
+- `docs/region_design.md`
+
 ### Dispatch Strategy
 
 单次派单策略抽象和最近空闲车策略。
@@ -306,6 +340,12 @@ Tile/grid 明细导出：
 
 ```powershell
 build-local\k_sweep.exe --radii 0.03 --k-values 1,2,5 --tile-stats-csv build-local\tile_stats.csv
+```
+
+Region map / stats 明细导出：
+
+```powershell
+build-local\k_sweep.exe --radii 0.03 --k-values 1,2,5 --region-map-csv build-local\region_map.csv --region-stats-csv build-local\region_stats.csv
 ```
 
 `--indexed-candidates` 和 `k=unlimited` 主要用于对照和压力测试，不作为默认实验口径。

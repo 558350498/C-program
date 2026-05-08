@@ -57,7 +57,9 @@
 - 第一版 opportunity adjustment 已进入实验报表，默认 `cold_dropoff_penalty = 1.0`、`hot_dropoff_discount = 1.0`，暂不影响 dispatch。
 - `go_experiments`、`go_batch_experiments` 已透传 opportunity adjustment 参数。
 - `go_experiment_summary` 已切换到展示 per-row hot/cold completion / coverage / opportunity 指标。
+- `go_experiments` 已新增 `-zone-fixed-pricing` 极端验证模式：完全不看公里数，只按 hot->hot 加价、cold->cold 减价、其他组合不变来估算固定单价收入；该模式只进报表，不影响 dispatch。
 - 轻量 tile/grid side table 第一版已落地到 C++：`TileGridStats` 统计 pickup/dropoff heat、初始 free driver count、hotspot/cold score，并接入 `k_sweep` hot/cold dropoff 分组；`k_sweep --tile-stats-csv` 可导出 tile 明细。
+- 受约束离线 UF region map 第一版已落地到 C++：`tile_region_map` 使用 `TileGridStats` 构建 `tile_id -> region_id`，`k_sweep --region-map-csv` / `--region-stats-csv` 可导出审计明细；region stats 已包含 bbox km 粗估，不影响 dispatch、候选生成或 MCMF cost。
 
 ## 当前数据流
 
@@ -83,14 +85,18 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 
 1. 保持默认实验为 `scan + finite k`，用 replay 继续产出稳定指标。
 2. 做轻量 tile/grid side table：围绕 pickup/dropoff tile heat、冷区分数、机会成本和候选粗筛，不做真实道路路径。
-3. 把热区 / 冷区统计从 Go 实验补充列逐步沉淀成清晰的数据结构和报告口径。
-4. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
+3. 先按 `docs/region_design.md` 保持区域边界清晰：region map 慢变，heat/cold 快变，UF 第一版只做统计审计。
+4. 把热区 / 冷区统计从 Go 实验补充列逐步沉淀成清晰的数据结构和报告口径。
+5. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
 
 暂缓：
 
 - 完整格点地图路径规划。
 - 真实道路最短路。
 - 把机会成本写进 MCMF cost。
+- Tarjan / SCC 自适应区域缩点。
+- 将 UF region map 接入派单硬边界或 MCMF cost。
+- 每个 batch 动态重划 region map。
 - 继续为 indexed 做底层性能微调，除非 scan + finite k 已经不能支撑目标样本。
 
 ### 1. 空间索引抽象与 KD-Tree 侧表化
@@ -262,6 +268,8 @@ NYC.csv -> Go preprocess -> normalized CSV -> replay_csv_demo -> report
 - `tools/go_batch_experiments` 会自动继承这些热区统计列。
 - 分组统计已从全局一组推进到每个实验 row：`k_sweep` 基于当前策略 replay outcome 输出 hot/cold dropoff 服务效果。
 - 当前分组指标包括请求数、候选边覆盖率、派单率、完成率、平均订单距离、平均接驾成本和机会成本估算。
+- region / zone 只作为 tile 之上的慢变解释层，当前 `tile_region_map` 已提供受约束离线 UF 原型，不进入 dispatch 权重或候选生成。
+- `region_stats.csv` 的 `approx_width_km`、`approx_height_km`、`approx_diagonal_km`、`approx_area_km2` 用于观察 UF 合并后的区域几何尺度；它们是 bbox 粗估，不是道路里程。
 - 当前机会成本公式只输出估算，不进入 MCMF cost：
 
 ```text
@@ -285,6 +293,16 @@ dropoff 越靠近冷区 -> 后续接单机会越低 -> 本单机会成本越高
 
 这两个因子必须分开建模，不能简单把热区等同于加价或减价。
 
+当前另有一个极端验证模式 `-zone-fixed-pricing`，故意不看公里数：
+
+```text
+hot->hot = base_fare * hot_hot_factor
+cold->cold = base_fare * cold_cold_factor
+other = base_fare
+```
+
+默认 `base_fare=1.0`、`hot_hot_factor=1.2`、`cold_cold_factor=0.8`。输出 `zone_fixed_completed_revenue`、`zone_fixed_net_delta` 和组合计数，用于观察纯热冷组合定价和距离收入基线的量级差异；不扣接驾成本，也不进入 dispatch。
+
 ## 中期可能做
 
 - 增加 CSV 输入后的数据质量报告。
@@ -293,6 +311,8 @@ dropoff 越靠近冷区 -> 后续接单机会越低 -> 本单机会成本越高
 - 根据 cost 复杂度决定是否抽 `PickupCostModel`。
 - 增加 `k_sweep` / `radius_sweep` 实验命令。
 - 按时间窗口进一步细化热区 / 冷区统计报告。
+- 基于 region 的 `region_stats.csv` 和 pickup/dropoff flow matrix。
+- 评估是否需要固定 N x N tile 聚合作为 coarse zone 对照 baseline。
 - 对 opportunity adjustment 做参数 sweep，观察 cold penalty / hot discount 对净收入估算的影响。
 - 评估是否把机会成本接入 MCMF pickup cost 或价格因子。
 - 增加基于机会成本的非机器学习调价规则，但先继续保持 dispatch 不受价格估算影响。
@@ -308,6 +328,9 @@ dropoff 越靠近冷区 -> 后续接单机会越低 -> 本单机会成本越高
 - 多线程 replay。
 - 完整真实道路最短路。
 - 完整格点路径规划。
+- Tarjan / SCC 区域缩点。
+- 每个 batch 动态重划 region map。
+- 将 UF region map 接入派单硬边界。
 - 未服务惩罚。
 - 复杂等待时间 cost 修正。
 - 复杂收益和重定位收益。
@@ -322,6 +345,7 @@ dropoff 越靠近冷区 -> 后续接单机会越低 -> 本单机会成本越高
 - 先 replay 实验表，再写最终定价策略。
 - 先稳定空间索引抽象，再把 KD-Tree 用到候选边和热度统计。
 - 先区域热度 / 机会成本，再考虑完整格点地图。
+- tile 是事实层，region 是慢变解释层，heat/cold 是快变状态。
 - KD-Tree、grid index、tile bucket 都应该藏在空间索引接口后面，不写死进业务层。
 - Go 负责 raw CSV 和合成输入。
 - C++ 负责调度核心和 replay。
