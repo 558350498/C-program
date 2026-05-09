@@ -354,9 +354,25 @@ go run . `
   -output-dir ..\..\web\map_viewer\public\data
 ```
 
+### Replay Visual Export
+
+离线 replay 可视化产物导出器。它读取 `requests.csv`、`drivers.csv`、`request_outcomes.csv` 和 `batch_logs.csv`，只生成给前端展示用的静态文件，不重新运行 dispatch，也不改变 C++ replay 模型。
+
+默认 `-mode auto`：`request_count <= 1000` 输出 live mode 的逐单虚空行走 artifact，`request_count > 1000` 输出 batch mode 的聚合时间线。
+
+位置：
+
+- `tools/replay_visual_export/main.go`
+- `tools/replay_visual_export/go.mod`
+
+输出：
+
+- live mode：`replay_manifest.json`、`replay_live_paths.geojson`、`replay_live_points.geojson`
+- batch mode：`replay_manifest.json`、`replay_batches.json`、`replay_batch_tiles.json`
+
 ### Map Viewer
 
-本地 MapLibre 前端展示层。当前使用 Vite + React + TypeScript，在 `localhost:5173` 加载 `/data/tile_stats.geojson` 渲染真实 tile 方格；如果 GeoJSON 不存在，会回退到内置 sample 图层。前端还提供可开关的在线 OSM raster 底图，仅用于开发展示；如果存在 `/data/tile_corner_witnesses.geojson`，hover tile 时会显示该 tile 四角最近 pickup witness。
+本地 MapLibre 前端展示层。当前使用 Vite + React + TypeScript，在 `localhost:5173` 加载 `/data/tile_stats.geojson` 渲染真实 tile 方格；如果 GeoJSON 不存在，会回退到内置 sample 图层。前端还提供可开关的在线 OSM raster 底图，仅用于开发展示；如果存在 `/data/tile_corner_witnesses.geojson`，hover tile 时会显示该 tile 四角最近 pickup witness。Replay 面板会读取 `/data/replay/replay_manifest.json`，按 `live` / `batch` 模式展示对应 artifact 状态；batch mode 已支持 tick 滑块、播放游标和当前窗口 tile activity overlay。
 
 位置：
 

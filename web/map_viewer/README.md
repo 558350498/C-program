@@ -44,6 +44,54 @@ Vite serves that file at:
 http://localhost:5173/data/tile_stats.geojson
 ```
 
+## Generate replay artifacts
+
+`tools/replay_visual_export` consumes existing replay CSV outputs. It does not
+run dispatch again.
+
+Auto mode uses `1000` requests as the default boundary:
+
+- `<= 1000`: live mode, writes `replay_live_paths.geojson` and
+  `replay_live_points.geojson`.
+- `> 1000`: batch mode, writes `replay_batches.json` and
+  `replay_batch_tiles.json`.
+
+Small live sample:
+
+```powershell
+cd tools\replay_visual_export
+go run . `
+  -requests ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\requests.csv `
+  -drivers ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\drivers.csv `
+  -request-outcomes ..\..\build-local\map-viewer-replay-1000\request_outcomes.csv `
+  -batch-logs ..\..\build-local\map-viewer-replay-1000\batch_logs.csv `
+  -output-dir ..\..\web\map_viewer\public\data\replay
+```
+
+Large batch sample:
+
+```powershell
+cd tools\replay_visual_export
+go run . `
+  -requests ..\..\build-local\perf-sweeps-20k-week-k1\normalized\limit_20000\requests.csv `
+  -drivers ..\..\build-local\perf-sweeps-20k-week-k1\normalized\limit_20000\drivers.csv `
+  -request-outcomes ..\..\build-local\map-viewer-replay-20k\request_outcomes.csv `
+  -batch-logs ..\..\build-local\map-viewer-replay-20k\batch_logs.csv `
+  -output-dir ..\..\web\map_viewer\public\data\replay `
+  -batch-window-seconds 600
+```
+
+When replay artifacts exist, the viewer loads
+`/data/replay/replay_manifest.json`.
+
+- Batch mode also loads `/data/replay/replay_batches.json` and
+  `/data/replay/replay_batch_tiles.json`. It shows a batch tick slider, play
+  cursor, current pending requests, available drivers, candidate edges, applied
+  assignments, cumulative assigned/completed counts, and a current-window tile
+  activity overlay on the map.
+- Live mode currently reports live path and point feature counts. The actual
+  per-vehicle animation layer is intentionally left for the next UI step.
+
 ## Local development
 
 Use `npm.cmd` on Windows PowerShell so execution policy does not try to run

@@ -423,3 +423,27 @@ C-program/
 - Go 负责 raw CSV 和合成输入。
 - C++ 负责调度核心和 replay。
 - 不为了未来服务化提前污染当前接口。
+
+## 当前可视化下一步：Replay artifact 导出器
+
+已新增 `tools/replay_visual_export`，把 replay CSV 产物转换成前端静态 artifact：
+
+```text
+requests.csv + drivers.csv + request_outcomes.csv + batch_logs.csv
+  -> tools/replay_visual_export
+  -> web/map_viewer/public/data/replay/
+```
+
+默认边界：
+
+- `<= 1000 requests`：live mode，输出逐单虚空行走路径和 pickup/dropoff 点。
+- `> 1000 requests`：batch mode，输出 batch 时间线和累计 assigned/completed 指标，不输出全量轨迹。
+
+接下来的前端工作应先读取 `replay_manifest.json`，按 `mode` 决定 UI：小样本走 live playback，大样本走 batch tick / 聚合状态展示。真实道路路线、WebSocket、RedisGeo 和后端 API 继续后置。
+
+前端第一步已接入：
+
+- `web/map_viewer` 启动时读取 `/data/replay/replay_manifest.json`。
+- batch mode 加载 `/data/replay/replay_batches.json` 和 `/data/replay/replay_batch_tiles.json`，提供 batch tick 滑块、播放游标、当前 batch 聚合指标和最近 600 秒 tile activity overlay。
+- live mode 先读取 live paths / points 的 feature 数量，后续再接逐车路径动画。
+- 当前仍不画全量大样本轨迹，也不引入后端 API。

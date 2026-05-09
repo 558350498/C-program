@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import maplibregl, { type LngLatBoundsLike, type Map } from "maplibre-gl";
+import { useEffect, useMemo, useRef, useState } from "react";
+import maplibregl, { type GeoJSONSource, type LngLatBoundsLike, type Map } from "maplibre-gl";
 
 const sampleGeoJson: GeoJSON.FeatureCollection = {
   type: "FeatureCollection",
@@ -50,23 +50,98 @@ const sampleGeoJson: GeoJSON.FeatureCollection = {
 
 type DataMode = "loading" | "geojson" | "fallback";
 type WitnessMode = "loading" | "geojson" | "missing";
+type ReplayDataMode = "loading" | "missing" | "live" | "batch" | "error";
 
 type HoverInfo = {
   title: string;
   details: string;
 };
 
+type ReplayManifest = {
+  schema_version: number;
+  mode: "live" | "batch";
+  requested_mode: string;
+  live_threshold: number;
+  request_count: number;
+  driver_count: number;
+  outcome_count: number;
+  batch_count: number;
+  assigned_count: number;
+  completed_count: number;
+  generated_files: string[];
+};
+
+type ReplayBatch = {
+  batch_time: number;
+  available_drivers: number;
+  pending_requests: number;
+  candidate_edges: number;
+  applied_assignments: number;
+  assigned_cumulative: number;
+  completed_cumulative: number;
+};
+
+type ReplayLiveSummary = {
+  pathCount: number;
+  pointCount: number;
+};
+
+type ReplayTileMode = "loading" | "geojson" | "missing" | "error";
+
+type ReplayBatchTileActivity = {
+  tile_id: number;
+  pickup_count: number;
+  assigned_count: number;
+  completed_count: number;
+  activity_score: number;
+};
+
+type ReplayBatchTileTotals = {
+  active_tiles: number;
+  pickup_count: number;
+  assigned_count: number;
+  completed_count: number;
+  activity_score: number;
+};
+
+type ReplayBatchTileFrame = {
+  batch_time: number;
+  window_start_time: number;
+  window_seconds: number;
+  tiles: ReplayBatchTileActivity[];
+  totals: ReplayBatchTileTotals;
+};
+
 const dataUrl = "/data/tile_stats.geojson";
 const witnessUrl = "/data/tile_corner_witnesses.geojson";
+const replayManifestUrl = "/data/replay/replay_manifest.json";
+const replayBatchesUrl = "/data/replay/replay_batches.json";
+const replayBatchTilesUrl = "/data/replay/replay_batch_tiles.json";
+const replayLivePathsUrl = "/data/replay/replay_live_paths.geojson";
+const replayLivePointsUrl = "/data/replay/replay_live_points.geojson";
 const basemapLayerId = "osm-basemap";
 const dispatchSourceId = "sample-dispatch";
 const witnessSourceId = "tile-corner-witnesses";
+const replayActivitySourceId = "replay-batch-activity";
+const replayActivityFillLayerId = "replay-batch-activity-fill";
+const replayActivityOutlineLayerId = "replay-batch-activity-outline";
 const selectedTileLayerId = "selected-tile-outline";
 const witnessLayerId = "tile-corner-witness-points";
 const sampleBounds: LngLatBoundsLike = [
   [-74.02, 40.7],
   [-73.9, 40.84]
 ];
+const emptyFeatureCollection: GeoJSON.FeatureCollection = {
+  type: "FeatureCollection",
+  features: []
+};
+const emptyReplayTotals: ReplayBatchTileTotals = {
+  active_tiles: 0,
+  pickup_count: 0,
+  assigned_count: 0,
+  completed_count: 0,
+  activity_score: 0
+};
 
 async function loadTileStats(): Promise<GeoJSON.FeatureCollection> {
   const response = await fetch(dataUrl);
@@ -93,6 +168,70 @@ async function loadWitnesses(): Promise<GeoJSON.FeatureCollection | null> {
     throw new Error("tile_corner_witnesses.geojson is not a FeatureCollection");
   }
   return data;
+}
+
+async function loadReplayManifest(): Promise<ReplayManifest | null> {
+  const response = await fetch(replayManifestUrl);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`replay_manifest.json returned ${response.status}`);
+  }
+  const data = (await response.json()) as ReplayManifest;
+  if (data.mode !== "live" && data.mode !== "batch") {
+    throw new Error("replay_manifest.json has an invalid mode");
+  }
+  return data;
+}
+
+async function loadReplayBatches(): Promise<ReplayBatch[]> {
+  const response = await fetch(replayBatchesUrl);
+  if (!response.ok) {
+    throw new Error(`replay_batches.json returned ${response.status}`);
+  }
+  const data = (await response.json()) as ReplayBatch[];
+  if (!Array.isArray(data)) {
+    throw new Error("replay_batches.json is not an array");
+  }
+  return data;
+}
+
+async function loadReplayBatchTiles(): Promise<ReplayBatchTileFrame[] | null> {
+  const response = await fetch(replayBatchTilesUrl);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`replay_batch_tiles.json returned ${response.status}`);
+  }
+  const data = (await response.json()) as ReplayBatchTileFrame[];
+  if (!Array.isArray(data)) {
+    throw new Error("replay_batch_tiles.json is not an array");
+  }
+  return data;
+}
+
+async function loadLiveSummary(): Promise<ReplayLiveSummary> {
+  const [pathsResponse, pointsResponse] = await Promise.all([
+    fetch(replayLivePathsUrl),
+    fetch(replayLivePointsUrl)
+  ]);
+  if (!pathsResponse.ok) {
+    throw new Error(`replay_live_paths.geojson returned ${pathsResponse.status}`);
+  }
+  if (!pointsResponse.ok) {
+    throw new Error(`replay_live_points.geojson returned ${pointsResponse.status}`);
+  }
+  const paths = (await pathsResponse.json()) as GeoJSON.FeatureCollection;
+  const points = (await pointsResponse.json()) as GeoJSON.FeatureCollection;
+  if (paths.type !== "FeatureCollection" || points.type !== "FeatureCollection") {
+    throw new Error("live replay GeoJSON is not a FeatureCollection");
+  }
+  return {
+    pathCount: paths.features.length,
+    pointCount: points.features.length
+  };
 }
 
 function describeFeature(feature: maplibregl.MapGeoJSONFeature): HoverInfo {
@@ -130,12 +269,80 @@ function witnessCountsByTile(data: GeoJSON.FeatureCollection | null): globalThis
   return counts;
 }
 
+function tileFeatureLookup(data: GeoJSON.FeatureCollection): globalThis.Map<number, GeoJSON.Feature> {
+  const features = new globalThis.Map<number, GeoJSON.Feature>();
+  for (const feature of data.features) {
+    const tileId = Number(feature.properties?.tile_id);
+    if (!Number.isFinite(tileId) || !feature.geometry) {
+      continue;
+    }
+    if (feature.geometry.type !== "Polygon" && feature.geometry.type !== "MultiPolygon") {
+      continue;
+    }
+    features.set(tileId, feature);
+  }
+  return features;
+}
+
+function activityFrameToGeoJson(
+  frame: ReplayBatchTileFrame | null,
+  featuresByTile: globalThis.Map<number, GeoJSON.Feature>
+): GeoJSON.FeatureCollection {
+  if (!frame) {
+    return emptyFeatureCollection;
+  }
+
+  const features: GeoJSON.Feature[] = [];
+  for (const tileActivity of frame.tiles) {
+    const tileFeature = featuresByTile.get(tileActivity.tile_id);
+    if (!tileFeature?.geometry) {
+      continue;
+    }
+    features.push({
+      type: "Feature",
+      geometry: tileFeature.geometry,
+      properties: {
+        tile_id: tileActivity.tile_id,
+        pickup_count: tileActivity.pickup_count,
+        assigned_count: tileActivity.assigned_count,
+        completed_count: tileActivity.completed_count,
+        activity_score: tileActivity.activity_score,
+        batch_time: frame.batch_time,
+        window_start_time: frame.window_start_time,
+        window_seconds: frame.window_seconds
+      }
+    });
+  }
+  return {
+    type: "FeatureCollection",
+    features
+  };
+}
+
 function formatScore(value: unknown) {
   const numberValue = Number(value);
   if (!Number.isFinite(numberValue)) {
     return "0.00";
   }
   return numberValue.toFixed(2);
+}
+
+function formatInteger(value: number | undefined) {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+  return Math.round(value ?? 0).toLocaleString("en-US");
+}
+
+function formatTime(seconds: number | undefined) {
+  if (!Number.isFinite(seconds)) {
+    return "00:00:00";
+  }
+  const safeSeconds = Math.max(0, Math.floor(seconds ?? 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const secs = safeSeconds % 60;
+  return [hours, minutes, secs].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
 function geoJsonBounds(data: GeoJSON.FeatureCollection): LngLatBoundsLike | null {
@@ -196,16 +403,36 @@ function geoJsonBounds(data: GeoJSON.FeatureCollection): LngLatBoundsLike | null
 function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
+  const tileFeaturesByIdRef = useRef<globalThis.Map<number, GeoJSON.Feature>>(new globalThis.Map());
   const [mapReady, setMapReady] = useState(false);
+  const [tileLookupVersion, setTileLookupVersion] = useState(0);
   const [basemapEnabled, setBasemapEnabled] = useState(true);
   const [dataMode, setDataMode] = useState<DataMode>("loading");
   const [witnessMode, setWitnessMode] = useState<WitnessMode>("loading");
   const [featureCount, setFeatureCount] = useState(0);
   const [witnessCount, setWitnessCount] = useState(0);
+  const [replayMode, setReplayMode] = useState<ReplayDataMode>("loading");
+  const [replayManifest, setReplayManifest] = useState<ReplayManifest | null>(null);
+  const [replayBatches, setReplayBatches] = useState<ReplayBatch[]>([]);
+  const [replayBatchTiles, setReplayBatchTiles] = useState<ReplayBatchTileFrame[]>([]);
+  const [replayTileMode, setReplayTileMode] = useState<ReplayTileMode>("loading");
+  const [liveSummary, setLiveSummary] = useState<ReplayLiveSummary | null>(null);
+  const [replayCursor, setReplayCursor] = useState(0);
+  const [isReplayPlaying, setIsReplayPlaying] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<HoverInfo>({
     title: "No feature selected",
     details: "Hover a tile"
   });
+
+  const selectedBatch = replayBatches[replayCursor] ?? null;
+  const selectedBatchTiles = replayBatchTiles[replayCursor] ?? null;
+  const selectedActivityTotals = selectedBatchTiles?.totals ?? emptyReplayTotals;
+  const replayProgress = useMemo(() => {
+    if (replayBatches.length <= 1) {
+      return 0;
+    }
+    return Math.round((replayCursor / (replayBatches.length - 1)) * 100);
+  }, [replayBatches.length, replayCursor]);
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -266,6 +493,8 @@ function App() {
 
       setDataMode(sourceMode);
       setFeatureCount(dispatchGeoJson.features.length);
+      tileFeaturesByIdRef.current = tileFeatureLookup(dispatchGeoJson);
+      setTileLookupVersion((version) => version + 1);
 
       let witnessGeoJson: GeoJSON.FeatureCollection | null = null;
       try {
@@ -287,6 +516,10 @@ function App() {
           type: "FeatureCollection",
           features: []
         }
+      });
+      map.addSource(replayActivitySourceId, {
+        type: "geojson",
+        data: emptyFeatureCollection
       });
 
       map.addLayer({
@@ -321,6 +554,39 @@ function App() {
           "line-color": "#355070",
           "line-opacity": 0.5,
           "line-width": 1
+        }
+      });
+
+      map.addLayer({
+        id: replayActivityFillLayerId,
+        type: "fill",
+        source: replayActivitySourceId,
+        paint: {
+          "fill-color": [
+            "interpolate",
+            ["linear"],
+            ["coalesce", ["get", "activity_score"], 0],
+            0,
+            "#e6f3f5",
+            4,
+            "#5bc0be",
+            10,
+            "#f4a261",
+            18,
+            "#e76f51"
+          ],
+          "fill-opacity": 0.74
+        }
+      });
+
+      map.addLayer({
+        id: replayActivityOutlineLayerId,
+        type: "line",
+        source: replayActivitySourceId,
+        paint: {
+          "line-color": "#0b1f33",
+          "line-opacity": 0.7,
+          "line-width": 1.6
         }
       });
 
@@ -443,6 +709,94 @@ function App() {
     map.setLayoutProperty(basemapLayerId, "visibility", basemapEnabled ? "visible" : "none");
   }, [basemapEnabled, mapReady]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadReplay() {
+      setReplayMode("loading");
+      try {
+        const manifest = await loadReplayManifest();
+        if (cancelled) {
+          return;
+        }
+        if (!manifest) {
+          setReplayMode("missing");
+          return;
+        }
+        setReplayManifest(manifest);
+
+        if (manifest.mode === "batch") {
+          const batches = await loadReplayBatches();
+          if (cancelled) {
+            return;
+          }
+          let batchTiles: ReplayBatchTileFrame[] | null = null;
+          try {
+            batchTiles = await loadReplayBatchTiles();
+            if (!cancelled) {
+              setReplayTileMode(batchTiles ? "geojson" : "missing");
+            }
+          } catch (error) {
+            console.warn("Replay batch tile activity is unavailable.", error);
+            if (!cancelled) {
+              setReplayTileMode("error");
+            }
+          }
+          setReplayBatches(batches);
+          setReplayBatchTiles(batchTiles ?? []);
+          setReplayCursor(0);
+          setReplayMode("batch");
+          return;
+        }
+
+        const summary = await loadLiveSummary();
+        if (cancelled) {
+          return;
+        }
+        setLiveSummary(summary);
+        setReplayMode("live");
+      } catch (error) {
+        console.warn("Replay artifacts are unavailable.", error);
+        if (!cancelled) {
+          setReplayMode("error");
+        }
+      }
+    }
+
+    loadReplay();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isReplayPlaying || replayMode !== "batch" || replayBatches.length <= 1) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setReplayCursor((current) => {
+        if (current >= replayBatches.length - 1) {
+          setIsReplayPlaying(false);
+          return current;
+        }
+        return current + 1;
+      });
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [isReplayPlaying, replayBatches.length, replayMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || replayMode !== "batch") {
+      return;
+    }
+    const source = map?.getSource(replayActivitySourceId) as GeoJSONSource | undefined;
+    if (!source) {
+      return;
+    }
+    source.setData(activityFrameToGeoJson(selectedBatchTiles, tileFeaturesByIdRef.current));
+  }, [mapReady, replayMode, replayCursor, replayBatchTiles, selectedBatchTiles, tileLookupVersion]);
+
   return (
     <main className="app-shell">
       <div ref={mapContainerRef} className="map-canvas" aria-label="Taxi dispatch map viewer" />
@@ -488,6 +842,142 @@ function App() {
             </dd>
           </div>
         </dl>
+      </section>
+      <section className="replay-panel" aria-label="Replay artifacts">
+        <div className="panel-header">
+          <h2>Replay</h2>
+          <span className={`mode-pill mode-${replayMode}`}>{replayMode}</span>
+        </div>
+
+        {replayManifest ? (
+          <dl className="replay-summary">
+            <div>
+              <dt>Requests</dt>
+              <dd>{formatInteger(replayManifest.request_count)}</dd>
+            </div>
+            <div>
+              <dt>Assigned</dt>
+              <dd>{formatInteger(replayManifest.assigned_count)}</dd>
+            </div>
+            <div>
+              <dt>Completed</dt>
+              <dd>{formatInteger(replayManifest.completed_count)}</dd>
+            </div>
+            <div>
+              <dt>Threshold</dt>
+              <dd>{formatInteger(replayManifest.live_threshold)}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="panel-note">Waiting for replay artifacts.</p>
+        )}
+
+        {replayMode === "batch" && selectedBatch ? (
+          <div className="batch-console">
+            <div className="timeline-controls">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={isReplayPlaying ? "Pause replay" : "Play replay"}
+                onClick={() => setIsReplayPlaying((value) => !value)}
+              >
+                <span className={isReplayPlaying ? "pause-icon" : "play-icon"} aria-hidden="true" />
+              </button>
+              <input
+                type="range"
+                min="0"
+                max={Math.max(0, replayBatches.length - 1)}
+                value={replayCursor}
+                aria-label="Replay batch tick"
+                onChange={(event) => {
+                  setIsReplayPlaying(false);
+                  setReplayCursor(Number(event.target.value));
+                }}
+              />
+              <span className="timeline-progress">{replayProgress}%</span>
+            </div>
+            <dl className="batch-metrics">
+              <div>
+                <dt>Time</dt>
+                <dd>{formatTime(selectedBatch.batch_time)}</dd>
+              </div>
+              <div>
+                <dt>Batch</dt>
+                <dd>
+                  {formatInteger(replayCursor + 1)} / {formatInteger(replayBatches.length)}
+                </dd>
+              </div>
+              <div>
+                <dt>Available</dt>
+                <dd>{formatInteger(selectedBatch.available_drivers)}</dd>
+              </div>
+              <div>
+                <dt>Pending</dt>
+                <dd>{formatInteger(selectedBatch.pending_requests)}</dd>
+              </div>
+              <div>
+                <dt>Edges</dt>
+                <dd>{formatInteger(selectedBatch.candidate_edges)}</dd>
+              </div>
+              <div>
+                <dt>Applied</dt>
+                <dd>{formatInteger(selectedBatch.applied_assignments)}</dd>
+              </div>
+              <div>
+                <dt>Total assigned</dt>
+                <dd>{formatInteger(selectedBatch.assigned_cumulative)}</dd>
+              </div>
+              <div>
+                <dt>Total done</dt>
+                <dd>{formatInteger(selectedBatch.completed_cumulative)}</dd>
+              </div>
+              <div>
+                <dt>Activity</dt>
+                <dd>{replayTileMode}</dd>
+              </div>
+              <div>
+                <dt>Active tiles</dt>
+                <dd>{formatInteger(selectedActivityTotals.active_tiles)}</dd>
+              </div>
+              <div>
+                <dt>Window pickup</dt>
+                <dd>{formatInteger(selectedActivityTotals.pickup_count)}</dd>
+              </div>
+              <div>
+                <dt>Window assigned</dt>
+                <dd>{formatInteger(selectedActivityTotals.assigned_count)}</dd>
+              </div>
+              <div>
+                <dt>Window done</dt>
+                <dd>{formatInteger(selectedActivityTotals.completed_count)}</dd>
+              </div>
+              <div>
+                <dt>Score total</dt>
+                <dd>{formatInteger(selectedActivityTotals.activity_score)}</dd>
+              </div>
+            </dl>
+          </div>
+        ) : null}
+
+        {replayMode === "live" && liveSummary ? (
+          <dl className="replay-summary live-summary">
+            <div>
+              <dt>Paths</dt>
+              <dd>{formatInteger(liveSummary.pathCount)}</dd>
+            </div>
+            <div>
+              <dt>Points</dt>
+              <dd>{formatInteger(liveSummary.pointCount)}</dd>
+            </div>
+          </dl>
+        ) : null}
+
+        {replayMode === "missing" ? (
+          <p className="panel-note">No replay manifest found under /data/replay.</p>
+        ) : null}
+        {replayMode === "error" ? (
+          <p className="panel-note">Replay artifact schema failed to load.</p>
+        ) : null}
       </section>
     </main>
   );

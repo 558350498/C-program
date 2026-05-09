@@ -229,3 +229,16 @@ opportunity_adjustment =
 - 变化频繁的 schema 放 Go。
 - 稳定的状态机和算法放 C++。
 - 策略只输出 `Assignment`，状态回写统一走 `TaxiSystem`。
+
+## 8. Replay visualization boundary
+
+`tools/replay_visual_export` 属于静态展示层。它读取 `requests.csv`、`drivers.csv`、`request_outcomes.csv` 和 `batch_logs.csv`，输出 `web/map_viewer/public/data/replay/` 下的 JSON/GeoJSON artifact。
+
+边界约定：
+
+- exporter 不触发 replay 重新计算。
+- exporter 不修改 C++ dispatch、MCMF cost、TaxiSystem 或 request 生命周期。
+- live mode 只为小样本生成虚空行走路径，用来解释接客和落客过程。
+- batch mode 只为大样本生成 batch 聚合时间线和窗口化 tile activity overlay，用来保证浏览器可读性和性能。
+- `replay_batch_tiles.json` 是展示聚合层：它把当前窗口的 pickup、assigned、completed 事件按 tile 汇总，不参与 dispatch、候选边生成或 cost 计算。
+- 这仍然是文件式展示边界，不是 HTTP API、WebSocket、Redis 或在线位置服务边界。

@@ -259,3 +259,16 @@ request arrival -> batch matching -> apply assignment -> start trip -> complete 
 - CSV loader 不解析 Kaggle 原始字段。
 - 坏行会被记录到 `errors`，好行仍然保留。
 - replay 默认关闭 `TaxiSystem` 状态日志，避免污染 summary。
+
+## 11. Replay visualization artifacts
+
+前端 replay 第一版继续沿用离线文件边界，由 `tools/replay_visual_export` 把 replay 已经产生的 CSV 结果转换成展示文件。
+
+模式边界：
+
+- `live`：适合 `request_count <= 1000` 的小样本，输出逐单播放用的 `replay_live_paths.geojson` 和 `replay_live_points.geojson`。路径仍然是虚空行走：司机当前位置到 pickup，pickup 到 dropoff；同一 taxi 的下一单起点使用上一单 dropoff。
+- `batch`：适合 `request_count > 1000` 的大样本，输出 `replay_batches.json` 和 `replay_batch_tiles.json`。前端按 batch tick 跳跃展示宏观状态，并用最近时间窗口的 tile activity overlay 表示空间活动，不输出全量行程动画。
+
+自动模式默认以 `1000` 单作为分界线。这个分界只影响展示产物大小和浏览器播放方式，不改变 replay 事件顺序、MCMF 匹配或 TaxiSystem 状态回写。
+
+batch tile activity 默认使用 `600` 秒滑动窗口。窗口统计包含 pickup tile 上的新请求和派单，以及 dropoff tile 上的完成事件；它是展示聚合，不代表司机实时坐标或真实道路轨迹。

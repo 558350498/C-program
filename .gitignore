@@ -10,6 +10,7 @@
 node_modules/
 web/map_viewer/dist/
 web/map_viewer/public/data/*.geojson
+web/map_viewer/public/data/replay/
 
 # Project-private notes / local documents.
 debug_analysis.md
