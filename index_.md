@@ -370,9 +370,17 @@ go run . `
 - live mode：`replay_manifest.json`、`replay_live_paths.geojson`、`replay_live_points.geojson`
 - batch mode：`replay_manifest.json`、`replay_batches.json`、`replay_batch_tiles.json`
 
+### Route Visual Export
+
+展示层真实路网导出器。第一版消费 `replay_live_paths.geojson`，通过本地 OSRM-compatible router 把虚空行走线段映射为真实道路 polyline，输出 `replay_live_routes.geojson`。如果 router 不可用或单段失败，会保留原始虚空 LineString 并标记 `route_status=fallback`。它不重新派单，不改变 replay outcome，不把真实道路 ETA 写进 MCMF cost。
+
+输出：
+
+- `web/map_viewer/public/data/replay/replay_live_routes.geojson`
+
 ### Map Viewer
 
-本地 MapLibre 前端展示层。当前使用 Vite + React + TypeScript，在 `localhost:5173` 加载 `/data/tile_stats.geojson` 渲染真实 tile 方格；如果 GeoJSON 不存在，会回退到内置 sample 图层。前端还提供可开关的在线 OSM raster 底图，仅用于开发展示；如果存在 `/data/tile_corner_witnesses.geojson`，hover tile 时会显示该 tile 四角最近 pickup witness。Replay 面板会读取 `/data/replay/replay_manifest.json`，按 `live` / `batch` 模式展示对应 artifact 状态；batch mode 已支持 tick 滑块、播放游标和当前窗口 tile activity overlay。
+本地 MapLibre 前端展示层。当前使用 Vite + React + TypeScript，在 `localhost:5173` 加载 `/data/tile_stats.geojson` 渲染真实 tile 方格；如果 GeoJSON 不存在，会回退到内置 sample 图层。前端还提供可开关的在线 OSM raster 底图，仅用于开发展示；如果存在 `/data/tile_corner_witnesses.geojson`，hover tile 时会显示该 tile 四角最近 pickup witness。Replay 面板会读取 `/data/replay/replay_manifest.json`，按 `live` / `batch` 模式展示对应 artifact 状态；batch mode 支持 tick 滑块、播放游标和当前窗口 tile activity overlay，live mode 会优先使用 `replay_live_routes.geojson` 沿 polyline 插值，否则回退到虚空行走路径。
 
 位置：
 

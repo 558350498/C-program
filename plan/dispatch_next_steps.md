@@ -93,12 +93,14 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 2. 做轻量 tile/grid side table：围绕 pickup/dropoff tile heat、冷区分数、机会成本和候选粗筛，不做真实道路路径。
 3. 先按 `docs/region_design.md` 保持区域边界清晰：region map 慢变，heat/cold 快变，UF 第一版只做统计审计。
 4. 先跑 `100 / 200 / 400` resolution sweep，看 `region_stats.csv` 的 region 数量、平均 tile 数、最大对角线和面积，再决定是否写清洗算法。
-5. 先完成 `tile_stats.csv -> tile_stats.geojson -> MapLibre tile layer`，把真实 tile 热度方格画出来。
-6. 为 tile hover 增加 `requests.csv -> tile_corner_witnesses.geojson`，显示四角最近 pickup witness，解释粗格子覆盖水面/不可行区域的原因。
-7. tile 图层稳定后，再接 `region_stats.csv` / `region_map.csv`，形成区域审计展示闭环。
-8. 地图完成后，再回到计价因子：先整理已有里程收入、接驾成本、hot/cold fixed pricing、opportunity adjustment，再决定是否增加更复杂的时间、拥堵、区域、供需因子。
-9. 讨论是否抽象 `CellIndex`：先让 `simpleTile` 实现，如果确实需要更专业地理网格，再增加 H3 实现。
-10. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
+5. 已完成 `tile_stats.csv -> tile_stats.geojson -> MapLibre tile layer`，真实 tile 热度方格已经可视化。
+6. 已完成 `requests.csv -> tile_corner_witnesses.geojson`，hover tile 时显示四角最近 pickup witness，解释粗格子覆盖水面/不可行区域的原因。
+7. 已完成 replay artifact 和前端 replay 面板：小样本 live playback、大样本 batch tick / tile activity overlay。
+8. 已完成展示层路线导出与 polyline 插值框架：`tools/route_visual_export` 可把 live replay 虚空线段映射成 `replay_live_routes.geojson`，前端会优先沿 polyline 插值移动 taxi 点；暂不改变 C++ replay、MCMF cost 或 pickup_cost。
+9. tile / replay 展示稳定后，再接 `region_stats.csv` / `region_map.csv`，形成区域审计展示闭环。
+10. 地图完成后，再回到计价因子：先整理已有里程收入、接驾成本、hot/cold fixed pricing、opportunity adjustment，再决定是否增加更复杂的时间、拥堵、区域、供需因子。
+11. 讨论是否抽象 `CellIndex`：先让 `simpleTile` 实现，如果确实需要更专业地理网格，再增加 H3 实现。
+12. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
 
 暂缓：
 
@@ -110,7 +112,7 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 - 每个 batch 动态重划 region map。
 - 继续为 indexed 做底层性能微调，除非 scan + finite k 已经不能支撑目标样本。
 - 在 100/200/400 多分辨率数据跑完前，先不写 region 清洗算法或自适应 tile。
-- 在讨论清楚 simpleTile/H3 的边界前，先不接自托管地图瓦片服务、OSM 路由或真实道路最短路；当前在线 raster 底图只作为前端展示参考。
+- 当前可接 OSM/OSRM/GraphHopper/Valhalla 作为展示层路线 artifact 来源，但不要把真实道路 ETA 写进候选边、MCMF cost 或 replay 状态机；当前在线 raster 底图仍只作为前端展示参考。
 - 在地图展示闭环完成前，先不继续叠复杂计价因子、Redis/RedisGeo、WebSocket 实时流或外部 GIS 中间件。
 
 ### 1. 空间索引抽象与 KD-Tree 侧表化
@@ -344,6 +346,8 @@ CSV replay artifacts
   -> tile_stats GeoJSON export
   -> static MapLibre tile layer + optional online raster basemap
   -> tile corner witness hover
+  -> replay live/batch static artifacts
+  -> visual route artifact for live replay
   -> region GeoJSON export
   -> timeline playback
   -> pricing factor experiments
@@ -387,7 +391,7 @@ C-program/
 边界：
 
 - `tools/geojson_export` 第一版负责把 `tile_stats.csv` 转成 tile GeoJSON，并可从 `requests.csv` 导出 corner witness GeoJSON；region 导出后续再加。
-- `web/map_viewer` 只负责加载 GeoJSON 并用 MapLibre 展示，可选在线 raster 底图只作视觉参考；不承载 replay、计价或派单逻辑。
+- `web/map_viewer` 只负责加载 GeoJSON/JSON 并用 MapLibre 展示，可选在线 raster 底图只作视觉参考；不承载 replay、计价或派单逻辑。
 - 第一版前端保持静态文件工作流，不接 Redis、WebSocket、数据库或真实路由服务。
 
 ## 暂时不做
@@ -445,5 +449,34 @@ requests.csv + drivers.csv + request_outcomes.csv + batch_logs.csv
 
 - `web/map_viewer` 启动时读取 `/data/replay/replay_manifest.json`。
 - batch mode 加载 `/data/replay/replay_batches.json` 和 `/data/replay/replay_batch_tiles.json`，提供 batch tick 滑块、播放游标、当前 batch 聚合指标和最近 600 秒 tile activity overlay。
-- live mode 先读取 live paths / points 的 feature 数量，后续再接逐车路径动画。
+- live mode 加载 `/data/replay/replay_live_paths.geojson` 和 `/data/replay/replay_live_points.geojson`，提供时间滑块、播放游标、虚空行走活跃路径、插值 taxi 点和最近 pickup/dropoff 事件点。
 - 当前仍不画全量大样本轨迹，也不引入后端 API。
+
+## 当前可视化状态：真实路网视觉路线 artifact
+
+已接入“展示层真实路网”路线框架，不改调度事实源：
+
+```text
+replay_live_paths.geojson
+  -> tools/route_visual_export
+  -> replay_live_routes.geojson
+  -> web/map_viewer live replay 沿道路 polyline 插值
+```
+
+边界：
+
+- 输入仍然来自 `tools/replay_visual_export` 的 live artifact。
+- 路线来源默认本地 OSRM-compatible router；不建议前端直接请求在线 routing API。
+- 输出 `replay_live_routes.geojson`，每条 feature 保留 `taxi_id`、`request_id`、`start_time`、`end_time`、`leg_type`，geometry 从直线 `LineString` 替换为真实道路 polyline。
+- 前端 live replay 的时间插值已从“两点线性插值”升级为“沿 polyline 累计长度插值”。
+- C++ replay、`request_outcomes.csv`、batch 日志、候选边生成、MCMF cost 和 `pickup_cost` 全部不变。
+- 如果某段路由失败，保留原始虚空线段作为 fallback，并在 route artifact 中标记 `route_status=fallback`。
+
+当前验收目标：
+
+- 1000 单 live 样本能生成 `replay_live_routes.geojson`。
+- 前端 live replay 能优先加载 routes，并显示 routed / fallback 数量。
+- 路由失败不会导致整场 replay 加载失败。
+- 不引入后端 API、WebSocket、Redis 或调度层真实 ETA。
+
+后续如果要真正看到道路级轨迹，需要先启动本地 OSRM / GraphHopper / Valhalla，再重新运行 `tools/route_visual_export` 生成 routed geometry；当前没有本地 router 时会得到全 fallback artifact。

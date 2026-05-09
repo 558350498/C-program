@@ -242,3 +242,23 @@ opportunity_adjustment =
 - batch mode 只为大样本生成 batch 聚合时间线和窗口化 tile activity overlay，用来保证浏览器可读性和性能。
 - `replay_batch_tiles.json` 是展示聚合层：它把当前窗口的 pickup、assigned、completed 事件按 tile 汇总，不参与 dispatch、候选边生成或 cost 计算。
 - 这仍然是文件式展示边界，不是 HTTP API、WebSocket、Redis 或在线位置服务边界。
+
+## 9. Visual routing boundary
+
+真实路网第一阶段只进入展示层，不进入调度核心层。
+
+已新增 `tools/route_visual_export`：
+
+- 输入：`replay_live_paths.geojson`。
+- 路由源：默认本地 OSRM-compatible router，不让浏览器逐段请求在线 routing API。
+- 输出：`replay_live_routes.geojson`，保留 live path 的时间和业务 properties，把 geometry 替换为真实道路 polyline。
+- 失败策略：单段路由失败时保留原始虚空 LineString，并标记 `route_status=fallback`。
+
+边界约束：
+
+- 不修改 `DispatchReplaySimulator`。
+- 不修改 `request_outcomes.csv`、`batch_logs.csv` 或 replay manifest 的事实含义。
+- 不修改候选边生成、MCMF cost、`pickup_cost`、完成率或派单结果。
+- 前端只把 `replay_live_routes.geojson` 当作更真实的绘制路径；时间仍以 replay artifact 的 `start_time` / `end_time` 为准。
+
+真实道路 ETA 接入 dispatch 是后续独立阶段，需要候选粗筛、路由缓存、性能预算和指标对照，不能和展示层路线混做。

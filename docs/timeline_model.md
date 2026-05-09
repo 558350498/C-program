@@ -272,3 +272,17 @@ request arrival -> batch matching -> apply assignment -> start trip -> complete 
 自动模式默认以 `1000` 单作为分界线。这个分界只影响展示产物大小和浏览器播放方式，不改变 replay 事件顺序、MCMF 匹配或 TaxiSystem 状态回写。
 
 batch tile activity 默认使用 `600` 秒滑动窗口。窗口统计包含 pickup tile 上的新请求和派单，以及 dropoff tile 上的完成事件；它是展示聚合，不代表司机实时坐标或真实道路轨迹。
+
+## 12. Visual routing boundary
+
+live replay 可以从“虚空行走直线”升级为“真实路网 polyline 插值”，但这只属于展示层。
+
+约定：
+
+- `DispatchReplaySimulator` 仍然输出原始 request outcome、batch log 和虚空行走时间事实。
+- `tools/route_visual_export` 只消费 live replay artifact，生成 `replay_live_routes.geojson`。
+- `replay_live_routes.geojson` 的 geometry 可以来自本地 OSRM / GraphHopper / Valhalla 路由结果；properties 必须保留 `taxi_id`、`request_id`、`start_time`、`end_time` 和 `leg_type`。
+- 前端按 `start_time` / `end_time` 沿 polyline 累计长度插值 taxi 位置。
+- 路由失败时保留原始虚空 LineString fallback，并标记 `route_status=fallback`，不改变订单状态和 replay outcome。
+
+这一步不做真实道路 ETA，不改变候选边 `pickup_cost`，也不改变 MCMF 匹配结果。真实道路 ETA 进入调度层必须另起阶段：先粗筛候选，再对有限候选做路网 ETA，并配缓存和性能评估。

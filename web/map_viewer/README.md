@@ -89,8 +89,36 @@ When replay artifacts exist, the viewer loads
   cursor, current pending requests, available drivers, candidate edges, applied
   assignments, cumulative assigned/completed counts, and a current-window tile
   activity overlay on the map.
-- Live mode currently reports live path and point feature counts. The actual
-  per-vehicle animation layer is intentionally left for the next UI step.
+- Live mode loads `/data/replay/replay_live_paths.geojson` and
+  `/data/replay/replay_live_points.geojson`. It shows a time slider, play
+  cursor, active virtual-walk paths, interpolated taxi dots, and recent
+  pickup/dropoff event points.
+- When `/data/replay/replay_live_routes.geojson` exists, live mode uses it
+  instead of `replay_live_paths.geojson` for path drawing and taxi interpolation.
+  Missing or failed routes fall back to the original virtual-walk line.
+
+## Generate live route GeoJSON
+
+`tools/route_visual_export` consumes `replay_live_paths.geojson` and writes
+`replay_live_routes.geojson`. It expects a local OSRM-compatible router by
+default:
+
+```text
+http://127.0.0.1:5000
+```
+
+Generate route artifacts:
+
+```powershell
+cd tools\route_visual_export
+go run . `
+  -input-live-paths ..\..\web\map_viewer\public\data\replay\replay_live_paths.geojson `
+  -output ..\..\web\map_viewer\public\data\replay\replay_live_routes.geojson `
+  -router-url http://127.0.0.1:5000
+```
+
+If the router is unavailable, the tool still writes an output file. Each failed
+route keeps the original LineString and gets `route_status=fallback`.
 
 ## Local development
 

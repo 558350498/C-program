@@ -33,6 +33,7 @@ compat_*.exe
 # Local datasets and generated normalized data.
 data/datasets/**
 data/normalized/**
+data/osm/**
 !data/datasets/
 !data/datasets/nyc-taxi-trip-duration/
 !data/datasets/nyc-taxi-trip-duration/README.md

@@ -84,6 +84,12 @@ type ReplayBatch = {
 type ReplayLiveSummary = {
   pathCount: number;
   pointCount: number;
+  routeSource: "routes" | "paths";
+  routeCount: number;
+  routedCount: number;
+  fallbackCount: number;
+  startTime: number;
+  endTime: number;
 };
 
 type ReplayTileMode = "loading" | "geojson" | "missing" | "error";
@@ -118,6 +124,7 @@ const replayManifestUrl = "/data/replay/replay_manifest.json";
 const replayBatchesUrl = "/data/replay/replay_batches.json";
 const replayBatchTilesUrl = "/data/replay/replay_batch_tiles.json";
 const replayLivePathsUrl = "/data/replay/replay_live_paths.geojson";
+const replayLiveRoutesUrl = "/data/replay/replay_live_routes.geojson";
 const replayLivePointsUrl = "/data/replay/replay_live_points.geojson";
 const basemapLayerId = "osm-basemap";
 const dispatchSourceId = "sample-dispatch";
@@ -125,6 +132,12 @@ const witnessSourceId = "tile-corner-witnesses";
 const replayActivitySourceId = "replay-batch-activity";
 const replayActivityFillLayerId = "replay-batch-activity-fill";
 const replayActivityOutlineLayerId = "replay-batch-activity-outline";
+const livePathSourceId = "replay-live-paths";
+const liveTaxiSourceId = "replay-live-taxis";
+const liveEventSourceId = "replay-live-events";
+const livePathLayerId = "replay-live-active-paths";
+const liveTaxiLayerId = "replay-live-active-taxis";
+const liveEventLayerId = "replay-live-recent-events";
 const selectedTileLayerId = "selected-tile-outline";
 const witnessLayerId = "tile-corner-witness-points";
 const sampleBounds: LngLatBoundsLike = [
@@ -228,10 +241,22 @@ async function loadLiveSummary(): Promise<ReplayLiveSummary> {
   if (paths.type !== "FeatureCollection" || points.type !== "FeatureCollection") {
     throw new Error("live replay GeoJSON is not a FeatureCollection");
   }
-  return {
-    pathCount: paths.features.length,
-    pointCount: points.features.length
-  };
+  return summarizeLiveReplay(paths, points, "paths");
+}
+
+async function loadLiveRoutes(): Promise<GeoJSON.FeatureCollection | null> {
+  const response = await fetch(replayLiveRoutesUrl);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`replay_live_routes.geojson returned ${response.status}`);
+  }
+  const data = (await response.json()) as GeoJSON.FeatureCollection;
+  if (data.type !== "FeatureCollection" || !Array.isArray(data.features)) {
+    throw new Error("replay_live_routes.geojson is not a FeatureCollection");
+  }
+  return data;
 }
 
 function describeFeature(feature: maplibregl.MapGeoJSONFeature): HoverInfo {
@@ -317,6 +342,184 @@ function activityFrameToGeoJson(
     type: "FeatureCollection",
     features
   };
+}
+
+function summarizeLiveReplay(
+  paths: GeoJSON.FeatureCollection,
+  points: GeoJSON.FeatureCollection,
+  routeSource: "routes" | "paths"
+): ReplayLiveSummary {
+  let startTime = Infinity;
+  let endTime = -Infinity;
+  for (const feature of paths.features) {
+    const start = Number(feature.properties?.start_time);
+    const end = Number(feature.properties?.end_time);
+    if (Number.isFinite(start)) {
+      startTime = Math.min(startTime, start);
+    }
+    if (Number.isFinite(end)) {
+      endTime = Math.max(endTime, end);
+    }
+  }
+  for (const feature of points.features) {
+    const time = Number(feature.properties?.event_time);
+    if (Number.isFinite(time)) {
+      startTime = Math.min(startTime, time);
+      endTime = Math.max(endTime, time);
+    }
+  }
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+    startTime = 0;
+    endTime = 0;
+  }
+  const routeStats = summarizeRouteStatuses(paths);
+  return {
+    pathCount: paths.features.length,
+    pointCount: points.features.length,
+    routeSource,
+    routeCount: routeSource === "routes" ? paths.features.length : 0,
+    routedCount: routeStats.routedCount,
+    fallbackCount: routeStats.fallbackCount,
+    startTime,
+    endTime
+  };
+}
+
+function summarizeRouteStatuses(paths: GeoJSON.FeatureCollection) {
+  let routedCount = 0;
+  let fallbackCount = 0;
+  for (const feature of paths.features) {
+    const routeStatus = feature.properties?.route_status;
+    if (routeStatus === "routed") {
+      routedCount += 1;
+    } else if (routeStatus === "fallback") {
+      fallbackCount += 1;
+    }
+  }
+  return { routedCount, fallbackCount };
+}
+
+function liveReplayFrame(
+  paths: GeoJSON.FeatureCollection | null,
+  points: GeoJSON.FeatureCollection | null,
+  replayTime: number
+) {
+  const activePaths: GeoJSON.Feature[] = [];
+  const taxiPoints: GeoJSON.Feature[] = [];
+  const recentEvents: GeoJSON.Feature[] = [];
+
+  if (paths) {
+    for (const feature of paths.features) {
+      const startTime = Number(feature.properties?.start_time);
+      const endTime = Number(feature.properties?.end_time);
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+        continue;
+      }
+      if (replayTime < startTime || replayTime > endTime) {
+        continue;
+      }
+      activePaths.push(feature);
+      const point = interpolateLineString(feature.geometry, startTime, endTime, replayTime);
+      if (point) {
+        taxiPoints.push({
+          type: "Feature",
+          geometry: {
+            type: "Point",
+            coordinates: point
+          },
+          properties: {
+            taxi_id: feature.properties?.taxi_id,
+            request_id: feature.properties?.request_id,
+            leg_type: feature.properties?.leg_type,
+            route_status: feature.properties?.route_status,
+            replay_time: replayTime
+          }
+        });
+      }
+    }
+  }
+
+  if (points) {
+    const eventWindowSeconds = 45;
+    for (const feature of points.features) {
+      const eventTime = Number(feature.properties?.event_time);
+      if (!Number.isFinite(eventTime)) {
+        continue;
+      }
+      if (eventTime <= replayTime && eventTime >= replayTime - eventWindowSeconds) {
+        recentEvents.push(feature);
+      }
+    }
+  }
+
+  return {
+    paths: {
+      type: "FeatureCollection",
+      features: activePaths
+    } satisfies GeoJSON.FeatureCollection,
+    taxis: {
+      type: "FeatureCollection",
+      features: taxiPoints
+    } satisfies GeoJSON.FeatureCollection,
+    events: {
+      type: "FeatureCollection",
+      features: recentEvents
+    } satisfies GeoJSON.FeatureCollection,
+    activePathCount: activePaths.length,
+    activeTaxiCount: taxiPoints.length,
+    recentEventCount: recentEvents.length
+  };
+}
+
+function interpolateLineString(
+  geometry: GeoJSON.Geometry | null,
+  startTime: number,
+  endTime: number,
+  replayTime: number
+): GeoJSON.Position | null {
+  if (!geometry || geometry.type !== "LineString" || geometry.coordinates.length === 0) {
+    return null;
+  }
+  if (geometry.coordinates.length === 1 || endTime <= startTime) {
+    return geometry.coordinates[0];
+  }
+  const ratio = Math.min(1, Math.max(0, (replayTime - startTime) / (endTime - startTime)));
+  const segmentLengths: number[] = [];
+  let totalLength = 0;
+  for (let index = 1; index < geometry.coordinates.length; index += 1) {
+    const previous = geometry.coordinates[index - 1];
+    const current = geometry.coordinates[index];
+    const length = coordinateDistance(previous, current);
+    segmentLengths.push(length);
+    totalLength += length;
+  }
+  if (totalLength <= 0) {
+    return geometry.coordinates[0];
+  }
+  const targetLength = totalLength * ratio;
+  let walkedLength = 0;
+  for (let index = 1; index < geometry.coordinates.length; index += 1) {
+    const segmentLength = segmentLengths[index - 1];
+    if (walkedLength + segmentLength >= targetLength) {
+      const previous = geometry.coordinates[index - 1];
+      const current = geometry.coordinates[index];
+      const segmentRatio = segmentLength > 0 ? (targetLength - walkedLength) / segmentLength : 0;
+      return [
+        Number(previous[0]) + (Number(current[0]) - Number(previous[0])) * segmentRatio,
+        Number(previous[1]) + (Number(current[1]) - Number(previous[1])) * segmentRatio
+      ];
+    }
+    walkedLength += segmentLength;
+  }
+  return geometry.coordinates[geometry.coordinates.length - 1];
+}
+
+function coordinateDistance(start: GeoJSON.Position, end: GeoJSON.Position) {
+  const averageLat = ((Number(start[1]) + Number(end[1])) / 2) * (Math.PI / 180);
+  const lonScale = Math.cos(averageLat);
+  const deltaLon = (Number(end[0]) - Number(start[0])) * lonScale;
+  const deltaLat = Number(end[1]) - Number(start[1]);
+  return Math.hypot(deltaLon, deltaLat);
 }
 
 function formatScore(value: unknown) {
@@ -417,6 +620,14 @@ function App() {
   const [replayBatchTiles, setReplayBatchTiles] = useState<ReplayBatchTileFrame[]>([]);
   const [replayTileMode, setReplayTileMode] = useState<ReplayTileMode>("loading");
   const [liveSummary, setLiveSummary] = useState<ReplayLiveSummary | null>(null);
+  const [livePaths, setLivePaths] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [livePoints, setLivePoints] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [liveReplayTime, setLiveReplayTime] = useState(0);
+  const [liveFrameCounts, setLiveFrameCounts] = useState({
+    activePathCount: 0,
+    activeTaxiCount: 0,
+    recentEventCount: 0
+  });
   const [replayCursor, setReplayCursor] = useState(0);
   const [isReplayPlaying, setIsReplayPlaying] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<HoverInfo>({
@@ -433,6 +644,12 @@ function App() {
     }
     return Math.round((replayCursor / (replayBatches.length - 1)) * 100);
   }, [replayBatches.length, replayCursor]);
+  const liveProgress = useMemo(() => {
+    if (!liveSummary || liveSummary.endTime <= liveSummary.startTime) {
+      return 0;
+    }
+    return Math.round(((liveReplayTime - liveSummary.startTime) / (liveSummary.endTime - liveSummary.startTime)) * 100);
+  }, [liveReplayTime, liveSummary]);
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -521,6 +738,18 @@ function App() {
         type: "geojson",
         data: emptyFeatureCollection
       });
+      map.addSource(livePathSourceId, {
+        type: "geojson",
+        data: emptyFeatureCollection
+      });
+      map.addSource(liveTaxiSourceId, {
+        type: "geojson",
+        data: emptyFeatureCollection
+      });
+      map.addSource(liveEventSourceId, {
+        type: "geojson",
+        data: emptyFeatureCollection
+      });
 
       map.addLayer({
         id: "sample-dispatch-fill",
@@ -587,6 +816,66 @@ function App() {
           "line-color": "#0b1f33",
           "line-opacity": 0.7,
           "line-width": 1.6
+        }
+      });
+
+      map.addLayer({
+        id: livePathLayerId,
+        type: "line",
+        source: livePathSourceId,
+        paint: {
+          "line-color": [
+            "match",
+            ["get", "leg_type"],
+            "dispatch_to_pickup",
+            "#2f80ed",
+            "pickup_to_dropoff",
+            "#00a676",
+            "#4f5d75"
+          ],
+          "line-opacity": 0.78,
+          "line-width": 2.2
+        }
+      });
+
+      map.addLayer({
+        id: liveEventLayerId,
+        type: "circle",
+        source: liveEventSourceId,
+        paint: {
+          "circle-color": [
+            "match",
+            ["get", "point_type"],
+            "pickup",
+            "#2f80ed",
+            "dropoff",
+            "#00a676",
+            "#4f5d75"
+          ],
+          "circle-opacity": 0.86,
+          "circle-radius": 5,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.5
+        }
+      });
+
+      map.addLayer({
+        id: liveTaxiLayerId,
+        type: "circle",
+        source: liveTaxiSourceId,
+        paint: {
+          "circle-color": [
+            "match",
+            ["get", "leg_type"],
+            "dispatch_to_pickup",
+            "#1f6feb",
+            "pickup_to_dropoff",
+            "#00875a",
+            "#0b1f33"
+          ],
+          "circle-radius": 6,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2
         }
       });
 
@@ -749,11 +1038,40 @@ function App() {
           return;
         }
 
-        const summary = await loadLiveSummary();
+        const [pathsResponse, pointsResponse] = await Promise.all([
+          fetch(replayLivePathsUrl),
+          fetch(replayLivePointsUrl)
+        ]);
+        if (!pathsResponse.ok) {
+          throw new Error(`replay_live_paths.geojson returned ${pathsResponse.status}`);
+        }
+        if (!pointsResponse.ok) {
+          throw new Error(`replay_live_points.geojson returned ${pointsResponse.status}`);
+        }
+        const paths = (await pathsResponse.json()) as GeoJSON.FeatureCollection;
+        const points = (await pointsResponse.json()) as GeoJSON.FeatureCollection;
+        if (paths.type !== "FeatureCollection" || points.type !== "FeatureCollection") {
+          throw new Error("live replay GeoJSON is not a FeatureCollection");
+        }
+        let displayPaths = paths;
+        let routeSource: "routes" | "paths" = "paths";
+        try {
+          const routes = await loadLiveRoutes();
+          if (routes) {
+            displayPaths = routes;
+            routeSource = "routes";
+          }
+        } catch (error) {
+          console.warn("Live route GeoJSON is unavailable; using virtual-walk paths.", error);
+        }
+        const summary = summarizeLiveReplay(displayPaths, points, routeSource);
         if (cancelled) {
           return;
         }
+        setLivePaths(displayPaths);
+        setLivePoints(points);
         setLiveSummary(summary);
+        setLiveReplayTime(summary.startTime);
         setReplayMode("live");
       } catch (error) {
         console.warn("Replay artifacts are unavailable.", error);
@@ -786,6 +1104,22 @@ function App() {
   }, [isReplayPlaying, replayBatches.length, replayMode]);
 
   useEffect(() => {
+    if (!isReplayPlaying || replayMode !== "live" || !liveSummary || liveSummary.endTime <= liveSummary.startTime) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setLiveReplayTime((current) => {
+        if (current >= liveSummary.endTime) {
+          setIsReplayPlaying(false);
+          return current;
+        }
+        return Math.min(liveSummary.endTime, current + 30);
+      });
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [isReplayPlaying, liveSummary, replayMode]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || replayMode !== "batch") {
       return;
@@ -796,6 +1130,28 @@ function App() {
     }
     source.setData(activityFrameToGeoJson(selectedBatchTiles, tileFeaturesByIdRef.current));
   }, [mapReady, replayMode, replayCursor, replayBatchTiles, selectedBatchTiles, tileLookupVersion]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || replayMode !== "live") {
+      return;
+    }
+    const pathSource = map?.getSource(livePathSourceId) as GeoJSONSource | undefined;
+    const taxiSource = map?.getSource(liveTaxiSourceId) as GeoJSONSource | undefined;
+    const eventSource = map?.getSource(liveEventSourceId) as GeoJSONSource | undefined;
+    if (!pathSource || !taxiSource || !eventSource) {
+      return;
+    }
+    const frame = liveReplayFrame(livePaths, livePoints, liveReplayTime);
+    pathSource.setData(frame.paths);
+    taxiSource.setData(frame.taxis);
+    eventSource.setData(frame.events);
+    setLiveFrameCounts({
+      activePathCount: frame.activePathCount,
+      activeTaxiCount: frame.activeTaxiCount,
+      recentEventCount: frame.recentEventCount
+    });
+  }, [livePaths, livePoints, liveReplayTime, mapReady, replayMode]);
 
   return (
     <main className="app-shell">
@@ -960,16 +1316,76 @@ function App() {
         ) : null}
 
         {replayMode === "live" && liveSummary ? (
-          <dl className="replay-summary live-summary">
-            <div>
-              <dt>Paths</dt>
-              <dd>{formatInteger(liveSummary.pathCount)}</dd>
+          <div className="batch-console">
+            <div className="timeline-controls">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={isReplayPlaying ? "Pause live replay" : "Play live replay"}
+                onClick={() => setIsReplayPlaying((value) => !value)}
+              >
+                <span className={isReplayPlaying ? "pause-icon" : "play-icon"} aria-hidden="true" />
+              </button>
+              <input
+                type="range"
+                min={liveSummary.startTime}
+                max={liveSummary.endTime}
+                value={liveReplayTime}
+                aria-label="Live replay time"
+                onChange={(event) => {
+                  setIsReplayPlaying(false);
+                  setLiveReplayTime(Number(event.target.value));
+                }}
+              />
+              <span className="timeline-progress">{liveProgress}%</span>
             </div>
-            <div>
-              <dt>Points</dt>
-              <dd>{formatInteger(liveSummary.pointCount)}</dd>
-            </div>
-          </dl>
+            <dl className="batch-metrics">
+              <div>
+                <dt>Time</dt>
+                <dd>{formatTime(liveReplayTime)}</dd>
+              </div>
+              <div>
+                <dt>Duration</dt>
+                <dd>{formatTime(liveSummary.endTime - liveSummary.startTime)}</dd>
+              </div>
+              <div>
+                <dt>Paths</dt>
+                <dd>{formatInteger(liveSummary.pathCount)}</dd>
+              </div>
+              <div>
+                <dt>Route source</dt>
+                <dd>{liveSummary.routeSource}</dd>
+              </div>
+              <div>
+                <dt>Routes</dt>
+                <dd>{formatInteger(liveSummary.routeCount)}</dd>
+              </div>
+              <div>
+                <dt>Routed</dt>
+                <dd>{formatInteger(liveSummary.routedCount)}</dd>
+              </div>
+              <div>
+                <dt>Fallback</dt>
+                <dd>{formatInteger(liveSummary.fallbackCount)}</dd>
+              </div>
+              <div>
+                <dt>Points</dt>
+                <dd>{formatInteger(liveSummary.pointCount)}</dd>
+              </div>
+              <div>
+                <dt>Active paths</dt>
+                <dd>{formatInteger(liveFrameCounts.activePathCount)}</dd>
+              </div>
+              <div>
+                <dt>Active taxis</dt>
+                <dd>{formatInteger(liveFrameCounts.activeTaxiCount)}</dd>
+              </div>
+              <div>
+                <dt>Recent events</dt>
+                <dd>{formatInteger(liveFrameCounts.recentEventCount)}</dd>
+              </div>
+            </dl>
+          </div>
         ) : null}
 
         {replayMode === "missing" ? (
