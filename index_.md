@@ -36,7 +36,7 @@ Go raw CSV preprocess
 
 - 现在继续保留 `simpleTile(grid_cols)` 作为最小实现和兼容 baseline。
 - H3 是更专业的后续候选路线，适合真实地理网格、层级分辨率、邻居查询和供需热区分析。
-- 暂不引入真实地图瓦片、OSM 路网、OSRM/GraphHopper/Valhalla 等中间件；这些属于地图展示或真实路由层，不是当前派单实验的必要依赖。
+- 暂不把真实地图瓦片、OSM 路网、OSRM/GraphHopper/Valhalla 等作为派单实验依赖；这些属于地图展示或真实路由层。当前前端可使用在线 OSM raster 底图作为开发展示参考，但不反向影响 replay / dispatch。
 - 下一步讨论重点是：是否抽象 `CellIndex`，先让 `simpleTile` 实现，再决定是否替换为 H3。
 
 ## 模块索引
@@ -336,7 +336,7 @@ Go raw CSV preprocess
 
 ### GeoJSON Export
 
-文件式前端数据桥。第一版只把 `tile_stats.csv` 转成 `tile_stats.geojson`，供 MapLibre 静态 viewer 通过 Vite 静态文件服务加载；不提供 HTTP API，也不触发 replay。
+文件式前端数据桥。第一版把 `tile_stats.csv` 转成 `tile_stats.geojson`，供 MapLibre 静态 viewer 通过 Vite 静态文件服务加载；传入 `requests.csv` 时还会输出 `tile_corner_witnesses.geojson`，用于 hover tile 时显示四角最近 pickup witness。它不提供 HTTP API，也不触发 replay。
 
 位置：
 
@@ -349,13 +349,14 @@ Go raw CSV preprocess
 cd tools\geojson_export
 go run . `
   -tile-stats ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\tile_stats.csv `
+  -requests ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\requests.csv `
   -tile-grid-cols 200 `
   -output-dir ..\..\web\map_viewer\public\data
 ```
 
 ### Map Viewer
 
-本地 MapLibre 前端展示层。当前使用 Vite + React + TypeScript，在 `localhost:5173` 加载 `/data/tile_stats.geojson` 渲染真实 tile 方格；如果 GeoJSON 不存在，会回退到内置 sample 图层。
+本地 MapLibre 前端展示层。当前使用 Vite + React + TypeScript，在 `localhost:5173` 加载 `/data/tile_stats.geojson` 渲染真实 tile 方格；如果 GeoJSON 不存在，会回退到内置 sample 图层。前端还提供可开关的在线 OSM raster 底图，仅用于开发展示；如果存在 `/data/tile_corner_witnesses.geojson`，hover tile 时会显示该 tile 四角最近 pickup witness。
 
 位置：
 

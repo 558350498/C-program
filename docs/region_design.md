@@ -44,7 +44,7 @@ CellIndex
   parent(cell_id, resolution) -> cell_id
 ```
 
-第一步可以让 `simpleTile` 实现这个接口；如果后续确认需要更真实的地理网格，再增加 H3 实现。地图瓦片、真实道路路由、OSM 中间件继续后置，不作为当前 region / heat 统计的前置条件。
+第一步可以让 `simpleTile` 实现这个接口；如果后续确认需要更真实的地理网格，再增加 H3 实现。地图瓦片、真实道路路由、OSM 中间件继续后置，不作为当前 region / heat 统计的前置条件；前端在线 raster 底图只用于视觉对齐参考。
 
 ## 3. 当前结论
 
@@ -123,8 +123,10 @@ Phase 3.5: tile GeoJSON visualization
 
 - 当前第一步只导出 `tile_stats.csv -> tile_stats.geojson`。
 - `web/map_viewer` 先画真实 tile 方格和 hotspot 颜色，用于确认 simpleTile bbox 反解、热区分布和前端加载链路。
+- `requests.csv -> tile_corner_witnesses.geojson` 用于 hover 某个 tile 时显示四角最近 pickup witness，解释为什么粗矩形可能只覆盖少量街道却仍有订单证据。
+- witness 点不是道路裁剪，也不是水域过滤；它只帮助审计 fixed tile 与真实订单点之间的关系。
 - region 可视化继续后置；等 tile 图层稳定后，再接 `region_stats.csv` 和 `region_map.csv`。
-- 这一阶段仍然不引入在线底图、后端 API、WebSocket 或真实道路服务。
+- 这一阶段仍然不引入后端 API、WebSocket 或真实道路服务；在线 OSM raster 底图只作为前端可关闭的开发展示层。
 
 Phase 4: region stats / flow matrix
 

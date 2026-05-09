@@ -49,6 +49,7 @@ const sampleGeoJson: GeoJSON.FeatureCollection = {
 };
 
 type DataMode = "loading" | "geojson" | "fallback";
+type WitnessMode = "loading" | "geojson" | "missing";
 
 type HoverInfo = {
   title: string;
@@ -56,6 +57,12 @@ type HoverInfo = {
 };
 
 const dataUrl = "/data/tile_stats.geojson";
+const witnessUrl = "/data/tile_corner_witnesses.geojson";
+const basemapLayerId = "osm-basemap";
+const dispatchSourceId = "sample-dispatch";
+const witnessSourceId = "tile-corner-witnesses";
+const selectedTileLayerId = "selected-tile-outline";
+const witnessLayerId = "tile-corner-witness-points";
 const sampleBounds: LngLatBoundsLike = [
   [-74.02, 40.7],
   [-73.9, 40.84]
@@ -69,6 +76,21 @@ async function loadTileStats(): Promise<GeoJSON.FeatureCollection> {
   const data = (await response.json()) as GeoJSON.FeatureCollection;
   if (data.type !== "FeatureCollection" || !Array.isArray(data.features)) {
     throw new Error("tile_stats.geojson is not a FeatureCollection");
+  }
+  return data;
+}
+
+async function loadWitnesses(): Promise<GeoJSON.FeatureCollection | null> {
+  const response = await fetch(witnessUrl);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`tile_corner_witnesses.geojson returned ${response.status}`);
+  }
+  const data = (await response.json()) as GeoJSON.FeatureCollection;
+  if (data.type !== "FeatureCollection" || !Array.isArray(data.features)) {
+    throw new Error("tile_corner_witnesses.geojson is not a FeatureCollection");
   }
   return data;
 }
@@ -92,6 +114,20 @@ function describeFeature(feature: maplibregl.MapGeoJSONFeature): HoverInfo {
     title: String(properties.name ?? "Sample feature"),
     details: String(properties.kind ?? "fallback")
   };
+}
+
+function witnessCountsByTile(data: GeoJSON.FeatureCollection | null): globalThis.Map<number, number> {
+  const counts = new globalThis.Map<number, number>();
+  if (!data) {
+    return counts;
+  }
+  for (const feature of data.features) {
+    const tileId = Number(feature.properties?.tile_id);
+    if (Number.isFinite(tileId)) {
+      counts.set(tileId, (counts.get(tileId) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 function formatScore(value: unknown) {
@@ -161,8 +197,11 @@ function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [basemapEnabled, setBasemapEnabled] = useState(true);
   const [dataMode, setDataMode] = useState<DataMode>("loading");
+  const [witnessMode, setWitnessMode] = useState<WitnessMode>("loading");
   const [featureCount, setFeatureCount] = useState(0);
+  const [witnessCount, setWitnessCount] = useState(0);
   const [hoverInfo, setHoverInfo] = useState<HoverInfo>({
     title: "No feature selected",
     details: "Hover a tile"
@@ -180,13 +219,29 @@ function App() {
       attributionControl: false,
       style: {
         version: 8,
-        sources: {},
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "© OpenStreetMap contributors"
+          }
+        },
         layers: [
           {
             id: "background",
             type: "background",
             paint: {
               "background-color": "#edf2f4"
+            }
+          },
+          {
+            id: basemapLayerId,
+            type: "raster",
+            source: "osm",
+            paint: {
+              "raster-opacity": 0.72,
+              "raster-saturation": -0.25
             }
           }
         ]
@@ -212,15 +267,32 @@ function App() {
       setDataMode(sourceMode);
       setFeatureCount(dispatchGeoJson.features.length);
 
-      map.addSource("sample-dispatch", {
+      let witnessGeoJson: GeoJSON.FeatureCollection | null = null;
+      try {
+        witnessGeoJson = await loadWitnesses();
+        setWitnessMode(witnessGeoJson ? "geojson" : "missing");
+      } catch (error) {
+        console.warn("Corner witness GeoJSON is unavailable.", error);
+        setWitnessMode("missing");
+      }
+      const witnessCounts = witnessCountsByTile(witnessGeoJson);
+
+      map.addSource(dispatchSourceId, {
         type: "geojson",
         data: dispatchGeoJson
+      });
+      map.addSource(witnessSourceId, {
+        type: "geojson",
+        data: witnessGeoJson ?? {
+          type: "FeatureCollection",
+          features: []
+        }
       });
 
       map.addLayer({
         id: "sample-dispatch-fill",
         type: "fill",
-        source: "sample-dispatch",
+        source: dispatchSourceId,
         filter: ["==", ["geometry-type"], "Polygon"],
         paint: {
           "fill-color": [
@@ -243,7 +315,7 @@ function App() {
       map.addLayer({
         id: "sample-dispatch-outline",
         type: "line",
-        source: "sample-dispatch",
+        source: dispatchSourceId,
         filter: ["==", ["geometry-type"], "Polygon"],
         paint: {
           "line-color": "#355070",
@@ -255,7 +327,7 @@ function App() {
       map.addLayer({
         id: "sample-dispatch-points",
         type: "circle",
-        source: "sample-dispatch",
+        source: dispatchSourceId,
         filter: ["==", ["geometry-type"], "Point"],
         paint: {
           "circle-color": [
@@ -271,34 +343,89 @@ function App() {
         }
       });
 
-      map.fitBounds(geoJsonBounds(dispatchGeoJson) ?? sampleBounds, { padding: 72, duration: 0 });
-    });
-
-    map.on("mousemove", "sample-dispatch-fill", (event) => {
-      const feature = event.features?.[0];
-      if (feature) {
-        setHoverInfo(describeFeature(feature));
-      }
-    });
-
-    map.on("mousemove", "sample-dispatch-points", (event) => {
-      const feature = event.features?.[0];
-      if (feature) {
-        setHoverInfo(describeFeature(feature));
-      }
-    });
-
-    map.on("mouseleave", "sample-dispatch-fill", () => {
-      setHoverInfo({
-        title: "No feature selected",
-        details: "Hover a tile"
+      map.addLayer({
+        id: selectedTileLayerId,
+        type: "line",
+        source: dispatchSourceId,
+        filter: ["==", ["get", "tile_id"], -1],
+        paint: {
+          "line-color": "#0b1f33",
+          "line-width": 3,
+          "line-opacity": 0.95
+        }
       });
-    });
 
-    map.on("mouseleave", "sample-dispatch-points", () => {
-      setHoverInfo({
-        title: "No feature selected",
-        details: "Hover a tile"
+      map.addLayer({
+        id: witnessLayerId,
+        type: "circle",
+        source: witnessSourceId,
+        filter: ["==", ["get", "tile_id"], -1],
+        paint: {
+          "circle-color": [
+            "match",
+            ["get", "corner"],
+            "southwest",
+            "#2f80ed",
+            "southeast",
+            "#00a676",
+            "northeast",
+            "#d1495b",
+            "northwest",
+            "#f2b84b",
+            "#4f5d75"
+          ],
+          "circle-radius": 5.5,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2
+        }
+      });
+
+      map.fitBounds(geoJsonBounds(dispatchGeoJson) ?? sampleBounds, { padding: 72, duration: 0 });
+
+      const showTileWitnesses = (feature: maplibregl.MapGeoJSONFeature) => {
+        const tileId = Number(feature.properties?.tile_id);
+        setHoverInfo(describeFeature(feature));
+        if (!Number.isFinite(tileId)) {
+          setWitnessCount(0);
+          return;
+        }
+        const tileFilter: maplibregl.FilterSpecification = ["==", ["get", "tile_id"], tileId];
+        map.setFilter(selectedTileLayerId, tileFilter);
+        map.setFilter(witnessLayerId, tileFilter);
+        setWitnessCount(witnessCounts.get(tileId) ?? 0);
+      };
+
+      const hideTileWitnesses = () => {
+        const emptyFilter: maplibregl.FilterSpecification = ["==", ["get", "tile_id"], -1];
+        map.setFilter(selectedTileLayerId, emptyFilter);
+        map.setFilter(witnessLayerId, emptyFilter);
+        setWitnessCount(0);
+        setHoverInfo({
+          title: "No feature selected",
+          details: "Hover a tile"
+        });
+      };
+
+      map.on("mousemove", "sample-dispatch-fill", (event) => {
+        const feature = event.features?.[0];
+        if (feature) {
+          showTileWitnesses(feature);
+        }
+      });
+
+      map.on("mousemove", "sample-dispatch-points", (event) => {
+        const feature = event.features?.[0];
+        if (feature) {
+          setHoverInfo(describeFeature(feature));
+        }
+      });
+
+      map.on("mouseleave", "sample-dispatch-fill", hideTileWitnesses);
+      map.on("mouseleave", "sample-dispatch-points", () => {
+        setHoverInfo({
+          title: "No feature selected",
+          details: "Hover a tile"
+        });
       });
     });
 
@@ -308,15 +435,35 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map?.getLayer(basemapLayerId)) {
+      return;
+    }
+    map.setLayoutProperty(basemapLayerId, "visibility", basemapEnabled ? "visible" : "none");
+  }, [basemapEnabled, mapReady]);
+
   return (
     <main className="app-shell">
       <div ref={mapContainerRef} className="map-canvas" aria-label="Taxi dispatch map viewer" />
       <section className="status-panel" aria-label="Map status">
         <h1>Taxi Map Viewer</h1>
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={basemapEnabled}
+            onChange={(event) => setBasemapEnabled(event.target.checked)}
+          />
+          <span>Online basemap</span>
+        </label>
         <dl>
           <div>
             <dt>Map</dt>
             <dd>{mapReady ? "loaded" : "loading"}</dd>
+          </div>
+          <div>
+            <dt>Basemap</dt>
+            <dd>{basemapEnabled ? "online" : "off"}</dd>
           </div>
           <div>
             <dt>Data</dt>
@@ -325,6 +472,13 @@ function App() {
           <div>
             <dt>Features</dt>
             <dd>{featureCount}</dd>
+          </div>
+          <div>
+            <dt>Witness</dt>
+            <dd>
+              <span>{witnessMode}</span>
+              <small>{witnessCount} shown for hovered tile</small>
+            </dd>
           </div>
           <div>
             <dt>Focus</dt>

@@ -35,6 +35,8 @@
 5. 静态展示层
    - `tools/geojson_export` 把离线 CSV 产物转成 GeoJSON 文件。
    - `web/map_viewer` 通过 Vite 静态文件服务加载 `/data/tile_stats.geojson`，用 MapLibre 渲染 tile 方格。
+   - 可选 `tile_corner_witnesses.geojson` 从 normalized `requests.csv` 抽取每个 tile 四角最近 pickup 点，只用于 hover 审计。
+   - viewer 可选加载在线 OSM raster 底图作为开发展示参考，但底图不进入 replay、dispatch、MCMF cost 或 CSV schema。
    - 这一层仍然是文件边界，不是后端 API 边界；不触发 replay、dispatch 或 pricing。
 
 ## 2. 数据流
@@ -64,6 +66,7 @@ Kaggle NYC.csv
 - 两边通过文件交互，不用 cgo，不传 C++ 对象或 STL 容器。
 - Go 可以继续补充业务估算列，但不同策略下的服务效果以 C++ replay outcome 为事实源。
 - 前端第一阶段只读取静态 GeoJSON 文件，不通过 HTTP API 调用 Go/C++ 工具；浏览器里的 `fetch("/data/tile_stats.geojson")` 只是 Vite 的本地静态文件服务。
+- corner witness 点只解释 tile 中真实 pickup 分布，不裁剪 tile polygon，也不参与候选生成或匹配。
 
 ## 3. 虚空行走模型
 
@@ -165,7 +168,7 @@ tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
 - region / zone 是 tile 之上的慢变解释层，具体边界见 `docs/region_design.md`。当前 `tile_region_map` 已提供受约束离线 UF 原型，但不把 region 作为派单硬边界，也不每个 batch 动态重划。
 - 当前 `simpleTile(grid_cols)` 是项目 baseline。它已经支持 100/200/400 多分辨率实验，优先用于验证区域尺度和热区稳定性。
 - H3 是后续可选升级，不是当前依赖。若要接入，应先抽象 `CellIndex`，再让 `simpleTile` 和 H3 成为两个实现。
-- 地图瓦片和真实路由中间件属于展示层或路网层，不应反向污染当前 replay / dispatch 建模。
+- 地图瓦片和真实路由中间件属于展示层或路网层，不应反向污染当前 replay / dispatch 建模。当前在线 raster 底图只是前端开发参考层，不是系统建模依赖。
 
 当前热区原型使用 pickup tile 频次作为轻量 heat side table：
 
