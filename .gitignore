@@ -7,6 +7,9 @@
 .vscode/
 .DS_Store
 *.docx
+node_modules/
+web/map_viewer/dist/
+web/map_viewer/public/data/*.geojson
 
 # Project-private notes / local documents.
 debug_analysis.md

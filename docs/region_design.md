@@ -119,6 +119,13 @@ Phase 3: multi-resolution tile sweep
 - `tools/go_experiment_summary` 会按 `tile_grid_cols` 分组，并在存在 `region_stats.csv` 时输出 `region_count`、`avg_region_tile_count`、`max_region_diag_km`、`avg_region_diag_km`、`max_region_area_km2`。
 - 这一阶段的判断目标是确认 region 过大来自 tile 太粗、UF 约束太松，还是高分辨率后热区过碎。
 
+Phase 3.5: tile GeoJSON visualization
+
+- 当前第一步只导出 `tile_stats.csv -> tile_stats.geojson`。
+- `web/map_viewer` 先画真实 tile 方格和 hotspot 颜色，用于确认 simpleTile bbox 反解、热区分布和前端加载链路。
+- region 可视化继续后置；等 tile 图层稳定后，再接 `region_stats.csv` 和 `region_map.csv`。
+- 这一阶段仍然不引入在线底图、后端 API、WebSocket 或真实道路服务。
+
 Phase 4: region stats / flow matrix
 
 - 聚合 pickup/dropoff/free driver/completion/candidate coverage。

@@ -62,6 +62,8 @@
 - 受约束离线 UF region map 第一版已落地到 C++：`tile_region_map` 使用 `TileGridStats` 构建 `tile_id -> region_id`，`k_sweep --region-map-csv` / `--region-stats-csv` 可导出审计明细；region stats 已包含 bbox km 粗估，不影响 dispatch、候选生成或 MCMF cost。
 - 多分辨率 tile / region sweep 第一版已接入：Go preprocess 支持 `-tile-grid-cols`，`k_sweep` 支持 `--tile-grid-cols`，`go_batch_experiments` 支持 `-tile-grid-cols 100,200,400` 并按 `normalized/grid_<N>/limit_<M>` 保存 normalized CSV、tile stats、region map 和 region stats，同时输出 `grid_<N>/summary.csv`；总表新增 `tile_grid_cols`。
 - 当前空间网格路线已经收口为：`simpleTile(grid_cols)` 继续作为 baseline；H3 作为后续候选升级方向，等讨论清楚是否需要真实地理层级网格后再接入；地图瓦片和真实路由中间件继续后置。
+- MapLibre 前端 MVP 已接入：`web/map_viewer` 使用 Vite + React + TypeScript 在 `localhost:5173` 渲染本地 MapLibre 画布，并支持加载 `/data/tile_stats.geojson`；GeoJSON 不存在时回退到内置 sample 图层。
+- 文件式数据桥第一版已接入：`tools/geojson_export` 可把 `tile_stats.csv` 转成 `web/map_viewer/public/data/tile_stats.geojson`，前端通过 Vite 静态文件服务读取，不引入后端 API。
 
 ## 当前数据流
 
@@ -75,6 +77,8 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
   -> DispatchReplaySimulator::run_report
   -> format_dispatch_replay_report
   -> request outcomes / k_sweep grouped metrics
+  -> tools/geojson_export
+  -> web/map_viewer
 ```
 
 ## 近期目标
@@ -89,10 +93,11 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 2. 做轻量 tile/grid side table：围绕 pickup/dropoff tile heat、冷区分数、机会成本和候选粗筛，不做真实道路路径。
 3. 先按 `docs/region_design.md` 保持区域边界清晰：region map 慢变，heat/cold 快变，UF 第一版只做统计审计。
 4. 先跑 `100 / 200 / 400` resolution sweep，看 `region_stats.csv` 的 region 数量、平均 tile 数、最大对角线和面积，再决定是否写清洗算法。
-5. 先做 GeoJSON 导出和地图展示，把 `tile_stats.csv`、`region_stats.csv`、`region_map.csv` 画出来，形成可解释的项目展示闭环。
-6. 地图完成后，再回到计价因子：先整理已有里程收入、接驾成本、hot/cold fixed pricing、opportunity adjustment，再决定是否增加更复杂的时间、拥堵、区域、供需因子。
-7. 讨论是否抽象 `CellIndex`：先让 `simpleTile` 实现，如果确实需要更专业地理网格，再增加 H3 实现。
-8. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
+5. 先完成 `tile_stats.csv -> tile_stats.geojson -> MapLibre tile layer`，把真实 tile 热度方格画出来。
+6. tile 图层稳定后，再接 `region_stats.csv` / `region_map.csv`，形成区域审计展示闭环。
+7. 地图完成后，再回到计价因子：先整理已有里程收入、接驾成本、hot/cold fixed pricing、opportunity adjustment，再决定是否增加更复杂的时间、拥堵、区域、供需因子。
+8. 讨论是否抽象 `CellIndex`：先让 `simpleTile` 实现，如果确实需要更专业地理网格，再增加 H3 实现。
+9. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
 
 暂缓：
 
@@ -335,18 +340,19 @@ other = base_fare
 
 ```text
 CSV replay artifacts
-  -> GeoJSON export
-  -> static web map
+  -> tile_stats GeoJSON export
+  -> static MapLibre tile layer
+  -> region GeoJSON export
   -> timeline playback
   -> pricing factor experiments
   -> optional CellIndex / H3
   -> optional Redis / routing / realtime middleware
 ```
 
-第一阶段可视化只需要文件式产物，不需要 Redis：
+第一阶段可视化只需要文件式产物，不需要 Redis 或 HTTP API：
 
-- `tile_stats.csv -> tile_stats.geojson`
-- `region_stats.csv -> region_stats.geojson`
+- 已接入：`tile_stats.csv -> tile_stats.geojson`
+- 后续：`region_stats.csv -> region_stats.geojson`
 - `region_map.csv` 用于把 tile 和 region 关系挂到 hover / tooltip。
 - region 第一版先画 bbox polygon，不做复杂 polygon union。
 
@@ -367,9 +373,9 @@ C-program/
   include/              C++ 头文件
   tests/                C++ 测试
   tools/                离线实验和转换工具
-    geojson_export/     后续新增：CSV -> GeoJSON
+    geojson_export/     CSV -> GeoJSON
   web/
-    map_viewer/         后续新增：MapLibre 静态地图展示
+    map_viewer/         MapLibre 静态地图展示
   docs/
   plan/
   build-local/          本地构建和实验产物，不进入 git
@@ -377,7 +383,7 @@ C-program/
 
 边界：
 
-- `tools/geojson_export` 只负责把 `tile_stats.csv` / `region_stats.csv` / `region_map.csv` 转成 GeoJSON。
+- `tools/geojson_export` 第一版只负责把 `tile_stats.csv` 转成 GeoJSON；region 导出后续再加。
 - `web/map_viewer` 只负责加载 GeoJSON 并用 MapLibre 展示，不承载 replay、计价或派单逻辑。
 - 第一版前端保持静态文件工作流，不接 Redis、WebSocket、数据库或真实路由服务。
 

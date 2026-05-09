@@ -334,6 +334,33 @@ Go raw CSV preprocess
 - `data/normalized/requests.csv`
 - `data/normalized/drivers.csv`
 
+### GeoJSON Export
+
+文件式前端数据桥。第一版只把 `tile_stats.csv` 转成 `tile_stats.geojson`，供 MapLibre 静态 viewer 通过 Vite 静态文件服务加载；不提供 HTTP API，也不触发 replay。
+
+位置：
+
+- `tools/geojson_export/main.go`
+- `tools/geojson_export/go.mod`
+
+常用命令：
+
+```powershell
+cd tools\geojson_export
+go run . `
+  -tile-stats ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\tile_stats.csv `
+  -tile-grid-cols 200 `
+  -output-dir ..\..\web\map_viewer\public\data
+```
+
+### Map Viewer
+
+本地 MapLibre 前端展示层。当前使用 Vite + React + TypeScript，在 `localhost:5173` 加载 `/data/tile_stats.geojson` 渲染真实 tile 方格；如果 GeoJSON 不存在，会回退到内置 sample 图层。
+
+位置：
+
+- `web/map_viewer`
+
 ## 常用命令
 
 ```powershell

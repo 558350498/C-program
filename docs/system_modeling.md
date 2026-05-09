@@ -32,6 +32,11 @@
    - `k_sweep` 基于 replay outcome 做每个实验 row 的 hot/cold dropoff 分组报告。
    - `go_batch_experiments` 可按 `tile-grid-cols` 跑 100/200/400 多分辨率对照。
 
+5. 静态展示层
+   - `tools/geojson_export` 把离线 CSV 产物转成 GeoJSON 文件。
+   - `web/map_viewer` 通过 Vite 静态文件服务加载 `/data/tile_stats.geojson`，用 MapLibre 渲染 tile 方格。
+   - 这一层仍然是文件边界，不是后端 API 边界；不触发 replay、dispatch 或 pricing。
+
 ## 2. 数据流
 
 当前主线数据流：
@@ -48,6 +53,8 @@ Kaggle NYC.csv
   -> TaxiSystem::apply_assignment
   -> replay report / request outcomes
   -> k_sweep hot/cold grouped metrics
+  -> tools/geojson_export
+  -> web/map_viewer static MapLibre view
 ```
 
 边界原则：
@@ -56,6 +63,7 @@ Kaggle NYC.csv
 - C++ 处理稳定的调度状态机、候选边、匹配算法和回放指标。
 - 两边通过文件交互，不用 cgo，不传 C++ 对象或 STL 容器。
 - Go 可以继续补充业务估算列，但不同策略下的服务效果以 C++ replay outcome 为事实源。
+- 前端第一阶段只读取静态 GeoJSON 文件，不通过 HTTP API 调用 Go/C++ 工具；浏览器里的 `fetch("/data/tile_stats.geojson")` 只是 Vite 的本地静态文件服务。
 
 ## 3. 虚空行走模型
 
