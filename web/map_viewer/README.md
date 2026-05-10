@@ -65,6 +65,9 @@ go run . `
   -drivers ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\drivers.csv `
   -request-outcomes ..\..\build-local\map-viewer-replay-1000\request_outcomes.csv `
   -batch-logs ..\..\build-local\map-viewer-replay-1000\batch_logs.csv `
+  -tile-stats ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\tile_stats.csv `
+  -sample-order-count 12 `
+  -sample-seed 20260510 `
   -output-dir ..\..\web\map_viewer\public\data\replay
 ```
 
@@ -77,6 +80,7 @@ go run . `
   -drivers ..\..\build-local\perf-sweeps-20k-week-k1\normalized\limit_20000\drivers.csv `
   -request-outcomes ..\..\build-local\map-viewer-replay-20k\request_outcomes.csv `
   -batch-logs ..\..\build-local\map-viewer-replay-20k\batch_logs.csv `
+  -sample-order-count 12 `
   -output-dir ..\..\web\map_viewer\public\data\replay `
   -batch-window-seconds 600
 ```
@@ -96,6 +100,10 @@ When replay artifacts exist, the viewer loads
 - When `/data/replay/replay_live_routes.geojson` exists, live mode uses it
   instead of `replay_live_paths.geojson` for path drawing and taxi interpolation.
   Missing or failed routes fall back to the original virtual-walk line.
+- When `/data/replay/sampled_order_explanations.json` exists, the Replay panel
+  shows representative orders. Selecting one highlights its route when live
+  route/path artifacts are available, plus pickup/dropoff points and related
+  tiles. The sample file is display-only and does not change dispatch results.
 
 ## Generate live route GeoJSON
 

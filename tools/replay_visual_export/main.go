@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,8 @@ import (
 const (
 	schemaVersion             = 1
 	defaultBatchWindowSeconds = 600
+	defaultSampleOrderCount   = 12
+	defaultSampleSeed         = 20260510
 )
 
 type config struct {
@@ -28,6 +31,11 @@ type config struct {
 	liveThreshold       int
 	batchWindowSeconds  int
 	mode                string
+	sampleOrderCount    int
+	sampleSeed          int64
+	tileStatsPath       string
+	coldDropoffPenalty  float64
+	hotDropoffDiscount  float64
 }
 
 type requestRow struct {
@@ -52,13 +60,19 @@ type driverRow struct {
 }
 
 type outcomeRow struct {
-	RequestID      string
-	Assigned       bool
-	Completed      bool
-	TaxiID         string
-	AssignmentTime int
-	PickupTime     int
-	CompletionTime int
+	RequestID           string
+	PendingBatchCount   int
+	CandidateBatchCount int
+	CandidateEdgeCount  int
+	HasCandidateEdge    bool
+	Assigned            bool
+	Completed           bool
+	TaxiID              string
+	AssignmentTime      int
+	PickupTime          int
+	CompletionTime      int
+	WaitTime            int
+	PickupCost          int
 }
 
 type batchLogRow struct {
@@ -111,6 +125,43 @@ type replayManifest struct {
 	Inputs             map[string]string `json:"inputs"`
 }
 
+type tileStatsRow struct {
+	TileID       string
+	HotspotScore float64
+	ColdScore    float64
+}
+
+type sampleOrderExplanation struct {
+	RequestID             string      `json:"request_id"`
+	TaxiID                string      `json:"taxi_id"`
+	Status                string      `json:"status"`
+	ReasonTags            []string    `json:"reason_tags"`
+	RequestTime           int         `json:"request_time"`
+	AssignmentTime        int         `json:"assignment_time"`
+	PickupTime            int         `json:"pickup_time"`
+	CompletionTime        int         `json:"completion_time"`
+	WaitTime              int         `json:"wait_time"`
+	PickupCost            int         `json:"pickup_cost"`
+	PendingBatchCount     int         `json:"pending_batch_count"`
+	CandidateBatchCount   int         `json:"candidate_batch_count"`
+	CandidateEdgeCount    int         `json:"candidate_edge_count"`
+	HasCandidateEdge      bool        `json:"has_candidate_edge"`
+	Pickup                samplePoint `json:"pickup"`
+	Dropoff               samplePoint `json:"dropoff"`
+	TripDistance          float64     `json:"trip_distance"`
+	PickupHotspotScore    *float64    `json:"pickup_hotspot_score"`
+	PickupColdScore       *float64    `json:"pickup_cold_score"`
+	DropoffHotspotScore   *float64    `json:"dropoff_hotspot_score"`
+	DropoffColdScore      *float64    `json:"dropoff_cold_score"`
+	OpportunityAdjustment *float64    `json:"opportunity_adjustment"`
+}
+
+type samplePoint struct {
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
+	Tile string  `json:"tile"`
+}
+
 type featureCollection struct {
 	Type     string    `json:"type"`
 	Features []feature `json:"features"`
@@ -148,6 +199,11 @@ func main() {
 	flag.IntVar(&cfg.liveThreshold, "live-threshold", 1000, "Max request count for auto live mode")
 	flag.IntVar(&cfg.batchWindowSeconds, "batch-window-seconds", defaultBatchWindowSeconds, "Sliding window in seconds for batch tile activity")
 	flag.StringVar(&cfg.mode, "mode", "auto", "Replay export mode: auto, live, or batch")
+	flag.IntVar(&cfg.sampleOrderCount, "sample-order-count", defaultSampleOrderCount, "Representative order explanations to write; 0 disables sampled_order_explanations.json")
+	flag.Int64Var(&cfg.sampleSeed, "sample-seed", defaultSampleSeed, "Random seed for reproducible sample order fill")
+	flag.StringVar(&cfg.tileStatsPath, "tile-stats", "", "Optional tile_stats.csv path for hot/cold explanation fields")
+	flag.Float64Var(&cfg.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "Opportunity cold dropoff penalty for sampled order explanations")
+	flag.Float64Var(&cfg.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "Opportunity hot dropoff discount for sampled order explanations")
 	flag.Parse()
 
 	if err := runExport(cfg); err != nil {
@@ -175,6 +231,10 @@ func runExport(cfg config) error {
 		return err
 	}
 	batches, err := loadBatchLogs(cfg.batchLogsPath)
+	if err != nil {
+		return err
+	}
+	tileStats, err := loadOptionalTileStats(cfg.tileStatsPath)
 	if err != nil {
 		return err
 	}
@@ -222,6 +282,15 @@ func runExport(cfg config) error {
 		}
 		files = append(files, "replay_batches.json", "replay_batch_tiles.json")
 	}
+	if cfg.sampleOrderCount > 0 {
+		samples := buildSampleOrderExplanations(requests, outcomes, tileStats, cfg.sampleOrderCount, cfg.sampleSeed, cfg.coldDropoffPenalty, cfg.hotDropoffDiscount)
+		if err := writeJSON(filepath.Join(cfg.outputDir, "sampled_order_explanations.json"), samples); err != nil {
+			return err
+		}
+		files = append(files, "sampled_order_explanations.json")
+	} else if err := removeGenerated(cfg.outputDir, "sampled_order_explanations.json"); err != nil {
+		return err
+	}
 
 	manifest := replayManifest{
 		SchemaVersion:      schemaVersion,
@@ -241,6 +310,7 @@ func runExport(cfg config) error {
 			"drivers":          cfg.driversPath,
 			"request_outcomes": cfg.requestOutcomesPath,
 			"batch_logs":       cfg.batchLogsPath,
+			"tile_stats":       cfg.tileStatsPath,
 		},
 	}
 	return writeJSON(filepath.Join(cfg.outputDir, "replay_manifest.json"), manifest)
@@ -249,6 +319,9 @@ func runExport(cfg config) error {
 func withDefaults(cfg config) config {
 	if cfg.batchWindowSeconds == 0 {
 		cfg.batchWindowSeconds = defaultBatchWindowSeconds
+	}
+	if cfg.sampleSeed == 0 {
+		cfg.sampleSeed = defaultSampleSeed
 	}
 	return cfg
 }
@@ -278,6 +351,15 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.batchWindowSeconds <= 0 {
 		return errors.New("-batch-window-seconds must be positive")
+	}
+	if cfg.sampleOrderCount < 0 {
+		return errors.New("-sample-order-count must be non-negative")
+	}
+	if math.IsNaN(cfg.coldDropoffPenalty) || math.IsInf(cfg.coldDropoffPenalty, 0) {
+		return errors.New("-cold-dropoff-penalty must be finite")
+	}
+	if math.IsNaN(cfg.hotDropoffDiscount) || math.IsInf(cfg.hotDropoffDiscount, 0) {
+		return errors.New("-hot-dropoff-discount must be finite")
 	}
 	return nil
 }
@@ -474,6 +556,181 @@ func buildBatchTileArtifacts(batches []batchLogRow, requests map[string]requestR
 	return frames, nil
 }
 
+func buildSampleOrderExplanations(requests map[string]requestRow, outcomes []outcomeRow, tileStats map[string]tileStatsRow, sampleCount int, sampleSeed int64, coldDropoffPenalty float64, hotDropoffDiscount float64) []sampleOrderExplanation {
+	if sampleCount <= 0 {
+		return nil
+	}
+
+	eligible := make([]outcomeRow, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if _, ok := requests[outcome.RequestID]; ok {
+			eligible = append(eligible, outcome)
+		}
+	}
+	sort.SliceStable(eligible, func(i, j int) bool {
+		left := requests[eligible[i].RequestID]
+		right := requests[eligible[j].RequestID]
+		if left.RequestTime != right.RequestTime {
+			return left.RequestTime < right.RequestTime
+		}
+		return eligible[i].RequestID < eligible[j].RequestID
+	})
+
+	selected := make([]outcomeRow, 0, sampleCount)
+	reasons := make(map[string][]string)
+	seen := make(map[string]bool)
+	add := func(outcome outcomeRow, reason string) {
+		if outcome.RequestID == "" {
+			return
+		}
+		reasons[outcome.RequestID] = appendUnique(reasons[outcome.RequestID], reason)
+		if seen[outcome.RequestID] || len(selected) >= sampleCount {
+			return
+		}
+		seen[outcome.RequestID] = true
+		selected = append(selected, outcome)
+	}
+	addFirst := func(reason string, matches func(outcomeRow) bool) {
+		for _, outcome := range eligible {
+			if matches(outcome) {
+				add(outcome, reason)
+				return
+			}
+		}
+	}
+	addMax := func(reason string, score func(outcomeRow) (float64, bool)) {
+		bestIndex := -1
+		bestScore := math.Inf(-1)
+		for index, outcome := range eligible {
+			value, ok := score(outcome)
+			if !ok {
+				continue
+			}
+			if value > bestScore {
+				bestScore = value
+				bestIndex = index
+			}
+		}
+		if bestIndex >= 0 {
+			add(eligible[bestIndex], reason)
+		}
+	}
+
+	addFirst("completed", func(outcome outcomeRow) bool { return outcome.Completed })
+	addFirst("assigned_incomplete", func(outcome outcomeRow) bool { return outcome.Assigned && !outcome.Completed })
+	addFirst("unserved", func(outcome outcomeRow) bool { return !outcome.Assigned })
+	addFirst("no_candidate_edge", func(outcome outcomeRow) bool { return !outcome.HasCandidateEdge })
+	addMax("high_wait", func(outcome outcomeRow) (float64, bool) {
+		return float64(outcome.WaitTime), outcome.Assigned
+	})
+	addMax("high_pickup_cost", func(outcome outcomeRow) (float64, bool) {
+		return float64(outcome.PickupCost), outcome.Assigned
+	})
+	addMax("hot_dropoff", func(outcome outcomeRow) (float64, bool) {
+		req := requests[outcome.RequestID]
+		stats, ok := tileStats[req.DropoffTile]
+		return stats.HotspotScore, ok
+	})
+	addMax("cold_dropoff", func(outcome outcomeRow) (float64, bool) {
+		req := requests[outcome.RequestID]
+		stats, ok := tileStats[req.DropoffTile]
+		return stats.ColdScore, ok
+	})
+
+	remaining := make([]outcomeRow, 0, len(eligible))
+	for _, outcome := range eligible {
+		if !seen[outcome.RequestID] {
+			remaining = append(remaining, outcome)
+		}
+	}
+	rng := rand.New(rand.NewSource(sampleSeed))
+	rng.Shuffle(len(remaining), func(i, j int) {
+		remaining[i], remaining[j] = remaining[j], remaining[i]
+	})
+	for _, outcome := range remaining {
+		add(outcome, "seeded_fill")
+		if len(selected) >= sampleCount {
+			break
+		}
+	}
+
+	samples := make([]sampleOrderExplanation, 0, len(selected))
+	for _, outcome := range selected {
+		req := requests[outcome.RequestID]
+		samples = append(samples, sampleExplanation(req, outcome, reasons[outcome.RequestID], tileStats, coldDropoffPenalty, hotDropoffDiscount))
+	}
+	return samples
+}
+
+func sampleExplanation(req requestRow, outcome outcomeRow, reasons []string, tileStats map[string]tileStatsRow, coldDropoffPenalty float64, hotDropoffDiscount float64) sampleOrderExplanation {
+	var pickupHotspot, pickupCold, dropoffHotspot, dropoffCold, opportunityAdjustment *float64
+	if stats, ok := tileStats[req.PickupTile]; ok {
+		pickupHotspot = floatPtr(stats.HotspotScore)
+		pickupCold = floatPtr(stats.ColdScore)
+	}
+	if stats, ok := tileStats[req.DropoffTile]; ok {
+		dropoffHotspot = floatPtr(stats.HotspotScore)
+		dropoffCold = floatPtr(stats.ColdScore)
+		adjustment := coldDropoffPenalty*stats.ColdScore - hotDropoffDiscount*stats.HotspotScore
+		opportunityAdjustment = floatPtr(adjustment)
+	}
+
+	return sampleOrderExplanation{
+		RequestID:             req.RequestID,
+		TaxiID:                outcome.TaxiID,
+		Status:                outcomeStatus(outcome),
+		ReasonTags:            append([]string(nil), reasons...),
+		RequestTime:           req.RequestTime,
+		AssignmentTime:        outcome.AssignmentTime,
+		PickupTime:            outcome.PickupTime,
+		CompletionTime:        outcome.CompletionTime,
+		WaitTime:              outcome.WaitTime,
+		PickupCost:            outcome.PickupCost,
+		PendingBatchCount:     outcome.PendingBatchCount,
+		CandidateBatchCount:   outcome.CandidateBatchCount,
+		CandidateEdgeCount:    outcome.CandidateEdgeCount,
+		HasCandidateEdge:      outcome.HasCandidateEdge,
+		Pickup:                samplePoint{X: req.PickupX, Y: req.PickupY, Tile: req.PickupTile},
+		Dropoff:               samplePoint{X: req.DropoffX, Y: req.DropoffY, Tile: req.DropoffTile},
+		TripDistance:          tripDistance(req),
+		PickupHotspotScore:    pickupHotspot,
+		PickupColdScore:       pickupCold,
+		DropoffHotspotScore:   dropoffHotspot,
+		DropoffColdScore:      dropoffCold,
+		OpportunityAdjustment: opportunityAdjustment,
+	}
+}
+
+func outcomeStatus(outcome outcomeRow) string {
+	if outcome.Completed {
+		return "completed"
+	}
+	if outcome.Assigned {
+		return "assigned_incomplete"
+	}
+	return "unserved"
+}
+
+func tripDistance(req requestRow) float64 {
+	averageLat := ((req.PickupY + req.DropoffY) / 2) * (math.Pi / 180)
+	deltaLon := (req.DropoffX - req.PickupX) * math.Cos(averageLat)
+	deltaLat := req.DropoffY - req.PickupY
+	return math.Hypot(deltaLon, deltaLat)
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
+}
+
 func buildTileActivityEvents(requests map[string]requestRow, outcomes []outcomeRow) ([]tileActivityEvent, error) {
 	events := make([]tileActivityEvent, 0, len(requests)+len(outcomes)*2)
 	for _, req := range requests {
@@ -637,13 +894,29 @@ func loadOutcomes(path string) ([]outcomeRow, error) {
 	outcomes := make([]outcomeRow, 0, len(rows))
 	for i, row := range rows {
 		outcome := outcomeRow{
-			RequestID: row["request_id"],
-			TaxiID:    row["taxi_id"],
-			Assigned:  parseBool(row["assigned"]),
-			Completed: parseBool(row["completed"]),
+			RequestID:        row["request_id"],
+			TaxiID:           row["taxi_id"],
+			HasCandidateEdge: parseBool(row["has_candidate_edge"]),
+			Assigned:         parseBool(row["assigned"]),
+			Completed:        parseBool(row["completed"]),
 		}
 		if outcome.RequestID == "" {
 			return nil, rowError(path, i, "missing request_id")
+		}
+		outcome.PendingBatchCount, err = parseOptionalIntField(path, i, row, "pending_batch_count", 0)
+		if err != nil {
+			return nil, err
+		}
+		outcome.CandidateBatchCount, err = parseOptionalIntField(path, i, row, "candidate_batch_count", 0)
+		if err != nil {
+			return nil, err
+		}
+		outcome.CandidateEdgeCount, err = parseOptionalIntField(path, i, row, "candidate_edge_count", 0)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := row["has_candidate_edge"]; !ok {
+			outcome.HasCandidateEdge = outcome.CandidateEdgeCount > 0
 		}
 		outcome.AssignmentTime, err = parseIntField(path, i, row, "assignment_time")
 		if err != nil {
@@ -657,9 +930,48 @@ func loadOutcomes(path string) ([]outcomeRow, error) {
 		if err != nil {
 			return nil, err
 		}
+		outcome.WaitTime, err = parseOptionalIntField(path, i, row, "wait_time", 0)
+		if err != nil {
+			return nil, err
+		}
+		outcome.PickupCost, err = parseOptionalIntField(path, i, row, "pickup_cost", 0)
+		if err != nil {
+			return nil, err
+		}
 		outcomes = append(outcomes, outcome)
 	}
 	return outcomes, nil
+}
+
+func loadOptionalTileStats(path string) (map[string]tileStatsRow, error) {
+	if path == "" {
+		return map[string]tileStatsRow{}, nil
+	}
+	rows, err := readCSVMaps(path)
+	if err != nil {
+		return nil, err
+	}
+	stats := make(map[string]tileStatsRow, len(rows))
+	for i, row := range rows {
+		tileID := row["tile_id"]
+		if tileID == "" {
+			return nil, rowError(path, i, "missing tile_id")
+		}
+		hotspot, err := parseFloatField(path, i, row, "hotspot_score")
+		if err != nil {
+			return nil, err
+		}
+		cold, err := parseFloatField(path, i, row, "cold_score")
+		if err != nil {
+			return nil, err
+		}
+		stats[tileID] = tileStatsRow{
+			TileID:       tileID,
+			HotspotScore: hotspot,
+			ColdScore:    cold,
+		}
+	}
+	return stats, nil
 }
 
 func loadBatchLogs(path string) ([]batchLogRow, error) {
@@ -749,6 +1061,18 @@ func parseIntField(path string, rowIndex int, row map[string]string, field strin
 	raw, ok := row[field]
 	if !ok || raw == "" {
 		return 0, rowError(path, rowIndex, "missing "+field)
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, rowError(path, rowIndex, fmt.Sprintf("invalid %s %q", field, raw))
+	}
+	return value, nil
+}
+
+func parseOptionalIntField(path string, rowIndex int, row map[string]string, field string, fallback int) (int, error) {
+	raw, ok := row[field]
+	if !ok || raw == "" {
+		return fallback, nil
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {

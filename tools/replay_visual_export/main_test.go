@@ -127,6 +127,87 @@ func TestRunExportAutoBatch(t *testing.T) {
 	}
 }
 
+func TestRunExportWritesSampleOrderExplanations(t *testing.T) {
+	root := t.TempDir()
+	inputDir := filepath.Join(root, "input")
+	outputDir := filepath.Join(root, "out")
+	mustMkdir(t, inputDir)
+
+	requests := filepath.Join(inputDir, "requests.csv")
+	drivers := filepath.Join(inputDir, "drivers.csv")
+	outcomes := filepath.Join(inputDir, "request_outcomes.csv")
+	batches := filepath.Join(inputDir, "batch_logs.csv")
+	tileStats := filepath.Join(inputDir, "tile_stats.csv")
+
+	writeFile(t, requests, "request_id,customer_id,request_time,pickup_x,pickup_y,dropoff_x,dropoff_y,pickup_tile,dropoff_tile\nr1,c1,0,-73.99,40.75,-73.98,40.76,1,2\nr2,c2,10,-73.97,40.74,-73.96,40.73,3,4\nr3,c3,20,-73.95,40.72,-73.94,40.71,5,6\nr4,c4,30,-73.93,40.70,-73.92,40.69,7,8\n")
+	writeFile(t, drivers, "taxi_id,x,y,tile,available_time,status\nt1,-74.00,40.70,1,0,free\n")
+	writeFile(t, outcomes, "request_id,pending_batch_count,candidate_batch_count,candidate_edge_count,has_candidate_edge,assigned,completed,taxi_id,assignment_time,pickup_time,completion_time,wait_time,pickup_cost\nr1,1,1,2,1,1,1,t1,0,30,90,0,30\nr2,3,2,2,1,1,0,t1,120,180,-1,110,60\nr3,2,0,0,0,0,0,-1,-1,-1,-1,0,0\nr4,2,1,1,1,1,1,t1,150,300,900,120,150\n")
+	writeFile(t, batches, "batch_time,available_drivers,pending_requests,candidate_edges,applied_assignments\n0,1,1,2,1\n120,1,2,2,1\n150,1,1,1,1\n")
+	writeFile(t, tileStats, "tile_id,pickup_count,dropoff_count,available_driver_count,hotspot_score,cold_score\n1,1,0,1,0.20,0.80\n2,0,1,0,0.80,0.20\n3,1,0,0,0.10,0.90\n4,0,1,0,0.05,0.95\n5,1,0,0,0.40,0.60\n6,0,1,0,0.00,1.00\n7,1,0,0,0.70,0.30\n8,0,1,0,0.60,0.40\n")
+
+	err := runExport(config{
+		requestsPath:        requests,
+		driversPath:         drivers,
+		requestOutcomesPath: outcomes,
+		batchLogsPath:       batches,
+		outputDir:           outputDir,
+		liveThreshold:       1000,
+		mode:                "auto",
+		sampleOrderCount:    4,
+		sampleSeed:          7,
+		tileStatsPath:       tileStats,
+		coldDropoffPenalty:  2,
+		hotDropoffDiscount:  0.5,
+	})
+	if err != nil {
+		t.Fatalf("runExport failed: %v", err)
+	}
+
+	manifest := readJSON[replayManifest](t, filepath.Join(outputDir, "replay_manifest.json"))
+	if !containsString(manifest.GeneratedFiles, "sampled_order_explanations.json") {
+		t.Fatalf("manifest generated_files does not include sampled_order_explanations.json: %v", manifest.GeneratedFiles)
+	}
+
+	samples := readJSON[[]sampleOrderExplanation](t, filepath.Join(outputDir, "sampled_order_explanations.json"))
+	if len(samples) != 4 {
+		t.Fatalf("sample count = %d, want 4", len(samples))
+	}
+	if samples[0].RequestID != "r1" || samples[0].Status != "completed" {
+		t.Fatalf("first sample = %+v, want completed r1", samples[0])
+	}
+	if !hasSampleWithTag(samples, "unserved") {
+		t.Fatalf("samples do not include unserved tag: %+v", samples)
+	}
+	if !hasSampleWithTag(samples, "high_pickup_cost") {
+		t.Fatalf("samples do not include high_pickup_cost tag: %+v", samples)
+	}
+	coldSample := sampleByTag(samples, "cold_dropoff")
+	if coldSample == nil || coldSample.OpportunityAdjustment == nil {
+		t.Fatalf("cold dropoff sample missing opportunity adjustment: %+v", samples)
+	}
+	want := 2.0
+	if mathAbs(*coldSample.OpportunityAdjustment-want) > 0.000001 {
+		t.Fatalf("opportunity adjustment = %f, want %f", *coldSample.OpportunityAdjustment, want)
+	}
+}
+
+func TestBuildSampleOrderExplanationsWithoutTileStats(t *testing.T) {
+	requests := map[string]requestRow{
+		"r1": {RequestID: "r1", RequestTime: 0, PickupX: -73.99, PickupY: 40.75, DropoffX: -73.98, DropoffY: 40.76, PickupTile: "1", DropoffTile: "2"},
+	}
+	outcomes := []outcomeRow{
+		{RequestID: "r1", Assigned: true, Completed: true, TaxiID: "t1", HasCandidateEdge: true},
+	}
+
+	samples := buildSampleOrderExplanations(requests, outcomes, nil, 1, 1, 1, 1)
+	if len(samples) != 1 {
+		t.Fatalf("sample count = %d, want 1", len(samples))
+	}
+	if samples[0].DropoffHotspotScore != nil || samples[0].OpportunityAdjustment != nil {
+		t.Fatalf("tile-derived fields should be nil without tile stats: %+v", samples[0])
+	}
+}
+
 func TestBuildBatchTileArtifactsUsesSlidingWindow(t *testing.T) {
 	requests := map[string]requestRow{
 		"r1": {RequestID: "r1", RequestTime: 0, PickupTile: "10", DropoffTile: "20"},
@@ -206,4 +287,26 @@ func findTile(frame replayBatchTileFrame, tileID int) replayBatchTileActivity {
 		}
 	}
 	return replayBatchTileActivity{}
+}
+
+func hasSampleWithTag(samples []sampleOrderExplanation, tag string) bool {
+	return sampleByTag(samples, tag) != nil
+}
+
+func sampleByTag(samples []sampleOrderExplanation, tag string) *sampleOrderExplanation {
+	for i := range samples {
+		for _, sampleTag := range samples[i].ReasonTags {
+			if sampleTag == tag {
+				return &samples[i]
+			}
+		}
+	}
+	return nil
+}
+
+func mathAbs(value float64) float64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }

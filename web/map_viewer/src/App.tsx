@@ -93,6 +93,7 @@ type ReplayLiveSummary = {
 };
 
 type ReplayTileMode = "loading" | "geojson" | "missing" | "error";
+type SampleOrdersMode = "loading" | "geojson" | "missing" | "error";
 
 type ReplayBatchTileActivity = {
   tile_id: number;
@@ -118,6 +119,37 @@ type ReplayBatchTileFrame = {
   totals: ReplayBatchTileTotals;
 };
 
+type SampleOrderPoint = {
+  x: number;
+  y: number;
+  tile: string;
+};
+
+type SampleOrderExplanation = {
+  request_id: string;
+  taxi_id: string;
+  status: "completed" | "assigned_incomplete" | "unserved";
+  reason_tags: string[];
+  request_time: number;
+  assignment_time: number;
+  pickup_time: number;
+  completion_time: number;
+  wait_time: number;
+  pickup_cost: number;
+  pending_batch_count: number;
+  candidate_batch_count: number;
+  candidate_edge_count: number;
+  has_candidate_edge: boolean;
+  pickup: SampleOrderPoint;
+  dropoff: SampleOrderPoint;
+  trip_distance: number;
+  pickup_hotspot_score: number | null;
+  pickup_cold_score: number | null;
+  dropoff_hotspot_score: number | null;
+  dropoff_cold_score: number | null;
+  opportunity_adjustment: number | null;
+};
+
 const dataUrl = "/data/tile_stats.geojson";
 const witnessUrl = "/data/tile_corner_witnesses.geojson";
 const replayManifestUrl = "/data/replay/replay_manifest.json";
@@ -126,6 +158,7 @@ const replayBatchTilesUrl = "/data/replay/replay_batch_tiles.json";
 const replayLivePathsUrl = "/data/replay/replay_live_paths.geojson";
 const replayLiveRoutesUrl = "/data/replay/replay_live_routes.geojson";
 const replayLivePointsUrl = "/data/replay/replay_live_points.geojson";
+const sampleOrdersUrl = "/data/replay/sampled_order_explanations.json";
 const basemapLayerId = "osm-basemap";
 const dispatchSourceId = "sample-dispatch";
 const witnessSourceId = "tile-corner-witnesses";
@@ -135,9 +168,14 @@ const replayActivityOutlineLayerId = "replay-batch-activity-outline";
 const livePathSourceId = "replay-live-paths";
 const liveTaxiSourceId = "replay-live-taxis";
 const liveEventSourceId = "replay-live-events";
+const selectedSamplePathSourceId = "selected-sample-paths";
+const selectedSamplePointSourceId = "selected-sample-points";
 const livePathLayerId = "replay-live-active-paths";
 const liveTaxiLayerId = "replay-live-active-taxis";
 const liveEventLayerId = "replay-live-recent-events";
+const selectedSamplePathLayerId = "selected-sample-paths";
+const selectedSamplePointLayerId = "selected-sample-points";
+const selectedSampleTileLayerId = "selected-sample-tile-outline";
 const selectedTileLayerId = "selected-tile-outline";
 const witnessLayerId = "tile-corner-witness-points";
 const sampleBounds: LngLatBoundsLike = [
@@ -255,6 +293,25 @@ async function loadLiveRoutes(): Promise<GeoJSON.FeatureCollection | null> {
   const data = (await response.json()) as GeoJSON.FeatureCollection;
   if (data.type !== "FeatureCollection" || !Array.isArray(data.features)) {
     throw new Error("replay_live_routes.geojson is not a FeatureCollection");
+  }
+  return data;
+}
+
+async function loadSampleOrders(): Promise<SampleOrderExplanation[] | null> {
+  const response = await fetch(sampleOrdersUrl);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`sampled_order_explanations.json returned ${response.status}`);
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+  const data = (await response.json()) as SampleOrderExplanation[];
+  if (!Array.isArray(data)) {
+    throw new Error("sampled_order_explanations.json is not an array");
   }
   return data;
 }
@@ -471,6 +528,76 @@ function liveReplayFrame(
   };
 }
 
+function selectedSamplePaths(
+  paths: GeoJSON.FeatureCollection | null,
+  requestId: string | null
+): GeoJSON.FeatureCollection {
+  if (!paths || !requestId) {
+    return emptyFeatureCollection;
+  }
+  return {
+    type: "FeatureCollection",
+    features: paths.features.filter((feature) => String(feature.properties?.request_id) === requestId)
+  };
+}
+
+function selectedSamplePoints(sample: SampleOrderExplanation | null): GeoJSON.FeatureCollection {
+  if (!sample) {
+    return emptyFeatureCollection;
+  }
+  return {
+    type: "FeatureCollection",
+    features: [
+      samplePointFeature(sample, "pickup"),
+      samplePointFeature(sample, "dropoff")
+    ]
+  };
+}
+
+function samplePointFeature(sample: SampleOrderExplanation, pointType: "pickup" | "dropoff"): GeoJSON.Feature {
+  const point = pointType === "pickup" ? sample.pickup : sample.dropoff;
+  return {
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [point.x, point.y]
+    },
+    properties: {
+      point_type: pointType,
+      request_id: sample.request_id,
+      taxi_id: sample.taxi_id,
+      tile: point.tile
+    }
+  };
+}
+
+function sampleTileFilter(sample: SampleOrderExplanation | null): maplibregl.FilterSpecification {
+  if (!sample) {
+    return ["==", ["get", "tile_id"], -1];
+  }
+  const pickupTile = Number(sample.pickup.tile);
+  const dropoffTile = Number(sample.dropoff.tile);
+  const tiles = [pickupTile, dropoffTile].filter(Number.isFinite);
+  if (tiles.length === 0) {
+    return ["==", ["get", "tile_id"], -1];
+  }
+  return ["in", ["get", "tile_id"], ["literal", tiles]];
+}
+
+function formatMaybeScore(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  return formatScore(value);
+}
+
+function formatSigned(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "n/a";
+  }
+  return value >= 0 ? `+${value.toFixed(2)}` : value.toFixed(2);
+}
+
 function interpolateLineString(
   geometry: GeoJSON.Geometry | null,
   startTime: number,
@@ -548,6 +675,13 @@ function formatTime(seconds: number | undefined) {
   return [hours, minutes, secs].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
+function formatEventTime(seconds: number | undefined) {
+  if (!Number.isFinite(seconds) || (seconds ?? 0) < 0) {
+    return "n/a";
+  }
+  return formatTime(seconds);
+}
+
 function geoJsonBounds(data: GeoJSON.FeatureCollection): LngLatBoundsLike | null {
   let west = Infinity;
   let south = Infinity;
@@ -622,6 +756,9 @@ function App() {
   const [liveSummary, setLiveSummary] = useState<ReplayLiveSummary | null>(null);
   const [livePaths, setLivePaths] = useState<GeoJSON.FeatureCollection | null>(null);
   const [livePoints, setLivePoints] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [sampleOrdersMode, setSampleOrdersMode] = useState<SampleOrdersMode>("loading");
+  const [sampleOrders, setSampleOrders] = useState<SampleOrderExplanation[]>([]);
+  const [selectedSampleRequestId, setSelectedSampleRequestId] = useState<string | null>(null);
   const [liveReplayTime, setLiveReplayTime] = useState(0);
   const [liveFrameCounts, setLiveFrameCounts] = useState({
     activePathCount: 0,
@@ -638,6 +775,8 @@ function App() {
   const selectedBatch = replayBatches[replayCursor] ?? null;
   const selectedBatchTiles = replayBatchTiles[replayCursor] ?? null;
   const selectedActivityTotals = selectedBatchTiles?.totals ?? emptyReplayTotals;
+  const selectedSample =
+    sampleOrders.find((sample) => sample.request_id === selectedSampleRequestId) ?? sampleOrders[0] ?? null;
   const replayProgress = useMemo(() => {
     if (replayBatches.length <= 1) {
       return 0;
@@ -747,6 +886,14 @@ function App() {
         data: emptyFeatureCollection
       });
       map.addSource(liveEventSourceId, {
+        type: "geojson",
+        data: emptyFeatureCollection
+      });
+      map.addSource(selectedSamplePathSourceId, {
+        type: "geojson",
+        data: emptyFeatureCollection
+      });
+      map.addSource(selectedSamplePointSourceId, {
         type: "geojson",
         data: emptyFeatureCollection
       });
@@ -880,6 +1027,37 @@ function App() {
       });
 
       map.addLayer({
+        id: selectedSamplePathLayerId,
+        type: "line",
+        source: selectedSamplePathSourceId,
+        paint: {
+          "line-color": "#111827",
+          "line-opacity": 0.9,
+          "line-width": 5
+        }
+      });
+
+      map.addLayer({
+        id: selectedSamplePointLayerId,
+        type: "circle",
+        source: selectedSamplePointSourceId,
+        paint: {
+          "circle-color": [
+            "match",
+            ["get", "point_type"],
+            "pickup",
+            "#1f6feb",
+            "dropoff",
+            "#d1495b",
+            "#111827"
+          ],
+          "circle-radius": 8,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2.5
+        }
+      });
+
+      map.addLayer({
         id: "sample-dispatch-points",
         type: "circle",
         source: dispatchSourceId,
@@ -907,6 +1085,19 @@ function App() {
           "line-color": "#0b1f33",
           "line-width": 3,
           "line-opacity": 0.95
+        }
+      });
+
+      map.addLayer({
+        id: selectedSampleTileLayerId,
+        type: "line",
+        source: dispatchSourceId,
+        filter: ["==", ["get", "tile_id"], -1],
+        paint: {
+          "line-color": "#111827",
+          "line-width": 3,
+          "line-opacity": 0.85,
+          "line-dasharray": [1.5, 1]
         }
       });
 
@@ -1001,6 +1192,30 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
+    async function loadSamples() {
+      setSampleOrdersMode("loading");
+      try {
+        const samples = await loadSampleOrders();
+        if (cancelled) {
+          return;
+        }
+        if (!samples) {
+          setSampleOrdersMode("missing");
+          setSampleOrders([]);
+          return;
+        }
+        setSampleOrders(samples);
+        setSelectedSampleRequestId((current) => current ?? samples[0]?.request_id ?? null);
+        setSampleOrdersMode("geojson");
+      } catch (error) {
+        console.warn("Sample order explanations are unavailable.", error);
+        if (!cancelled) {
+          setSampleOrdersMode("error");
+          setSampleOrders([]);
+        }
+      }
+    }
+
     async function loadReplay() {
       setReplayMode("loading");
       try {
@@ -1081,6 +1296,7 @@ function App() {
       }
     }
 
+    loadSamples();
     loadReplay();
     return () => {
       cancelled = true;
@@ -1152,6 +1368,24 @@ function App() {
       recentEventCount: frame.recentEventCount
     });
   }, [livePaths, livePoints, liveReplayTime, mapReady, replayMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady) {
+      return;
+    }
+    const pathSource = map?.getSource(selectedSamplePathSourceId) as GeoJSONSource | undefined;
+    const pointSource = map?.getSource(selectedSamplePointSourceId) as GeoJSONSource | undefined;
+    if (pathSource) {
+      pathSource.setData(selectedSamplePaths(livePaths, selectedSample?.request_id ?? null));
+    }
+    if (pointSource) {
+      pointSource.setData(selectedSamplePoints(selectedSample));
+    }
+    if (map?.getLayer(selectedSampleTileLayerId)) {
+      map.setFilter(selectedSampleTileLayerId, sampleTileFilter(selectedSample));
+    }
+  }, [livePaths, mapReady, selectedSample]);
 
   return (
     <main className="app-shell">
@@ -1387,6 +1621,93 @@ function App() {
             </dl>
           </div>
         ) : null}
+
+        <div className="sample-orders">
+          <div className="panel-header sample-header">
+            <h2>Sample Orders</h2>
+            <span className={`mode-pill mode-${sampleOrdersMode}`}>{sampleOrdersMode}</span>
+          </div>
+          {selectedSample ? (
+            <>
+              <div className="sample-list" role="list" aria-label="Sample orders">
+                {sampleOrders.map((sample) => (
+                  <button
+                    key={sample.request_id}
+                    type="button"
+                    className={`sample-order ${sample.request_id === selectedSample.request_id ? "sample-order-active" : ""}`}
+                    onClick={() => setSelectedSampleRequestId(sample.request_id)}
+                  >
+                    <span>{sample.request_id}</span>
+                    <small>{sample.status}</small>
+                  </button>
+                ))}
+              </div>
+              <dl className="batch-metrics sample-metrics">
+                <div>
+                  <dt>Status</dt>
+                  <dd>{selectedSample.status}</dd>
+                </div>
+                <div>
+                  <dt>Taxi</dt>
+                  <dd>{selectedSample.taxi_id}</dd>
+                </div>
+                <div>
+                  <dt>Request</dt>
+                  <dd>{formatTime(selectedSample.request_time)}</dd>
+                </div>
+                <div>
+                  <dt>Assigned</dt>
+                  <dd>{formatEventTime(selectedSample.assignment_time)}</dd>
+                </div>
+                <div>
+                  <dt>Pickup</dt>
+                  <dd>{formatEventTime(selectedSample.pickup_time)}</dd>
+                </div>
+                <div>
+                  <dt>Complete</dt>
+                  <dd>{formatEventTime(selectedSample.completion_time)}</dd>
+                </div>
+                <div>
+                  <dt>Wait</dt>
+                  <dd>{formatTime(selectedSample.wait_time)}</dd>
+                </div>
+                <div>
+                  <dt>Pickup cost</dt>
+                  <dd>{formatTime(selectedSample.pickup_cost)}</dd>
+                </div>
+                <div>
+                  <dt>Edges</dt>
+                  <dd>{formatInteger(selectedSample.candidate_edge_count)}</dd>
+                </div>
+                <div>
+                  <dt>Trip dist</dt>
+                  <dd>{selectedSample.trip_distance.toFixed(4)}</dd>
+                </div>
+                <div>
+                  <dt>Drop hot</dt>
+                  <dd>{formatMaybeScore(selectedSample.dropoff_hotspot_score)}</dd>
+                </div>
+                <div>
+                  <dt>Opp adjust</dt>
+                  <dd>{formatSigned(selectedSample.opportunity_adjustment)}</dd>
+                </div>
+              </dl>
+              <div className="sample-tags">
+                {selectedSample.reason_tags.map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="panel-note">
+              {sampleOrdersMode === "missing"
+                ? "No sampled order explanations found."
+                : sampleOrdersMode === "error"
+                  ? "Sample order explanation schema failed to load."
+                : "Waiting for sampled order explanations."}
+            </p>
+          )}
+        </div>
 
         {replayMode === "missing" ? (
           <p className="panel-note">No replay manifest found under /data/replay.</p>

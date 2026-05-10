@@ -32,8 +32,10 @@ type options struct {
 	kmPerDegree            float64
 	hotspotTrials          int
 	seed                   int64
+	pickupHotWeight        float64
 	priceFloor             float64
 	priceCap               float64
+	pricingMode            string
 	coldDropoffPenalty     float64
 	hotDropoffDiscount     float64
 	tileGridCols           int
@@ -76,6 +78,29 @@ type zoneFixedStats struct {
 	netDelta            float64
 }
 
+type pricingParams struct {
+	farePerKm              float64
+	pickupCostPerKm        float64
+	kmPerDegree            float64
+	secondsPerDistanceUnit float64
+	pickupHotWeight        float64
+	coldDropoffPenalty     float64
+	hotDropoffDiscount     float64
+	priceFloor             float64
+	priceCap               float64
+	mode                   string
+}
+
+type pricingSummary struct {
+	mode            string
+	avgPriceFactor  float64
+	maxPriceFactor  float64
+	possibleRevenue float64
+	completedRevenue float64
+	netRevenue      float64
+	netDelta        float64
+}
+
 func main() {
 	var opts options
 	flag.StringVar(&opts.requestsPath, "requests", "../../data/normalized/requests.csv", "normalized requests.csv path")
@@ -90,10 +115,12 @@ func main() {
 	flag.Float64Var(&opts.kmPerDegree, "km-per-degree", 111.0, "rough conversion from replay degree distance to kilometers")
 	flag.IntVar(&opts.hotspotTrials, "hotspot-trials", 0, "random hotspot pricing trials per sweep row; 0 disables hotspot pricing")
 	flag.Int64Var(&opts.seed, "seed", 20260504, "random seed for hotspot pricing trials")
+	flag.Float64Var(&opts.pickupHotWeight, "pickup-hot-weight", 0.15, "fixed pricing pickup hotspot weight")
 	flag.Float64Var(&opts.priceFloor, "price-floor", 0.8, "minimum hotspot price factor")
 	flag.Float64Var(&opts.priceCap, "price-cap", 1.8, "maximum hotspot price factor")
-	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "opportunity cold dropoff penalty passed to k_sweep")
-	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "opportunity hot dropoff discount passed to k_sweep")
+	flag.StringVar(&opts.pricingMode, "pricing-mode", "linear", "fixed pricing mode: linear or diminishing")
+	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 0.20, "opportunity cold dropoff penalty passed to k_sweep and fixed pricing")
+	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 0.10, "opportunity hot dropoff discount passed to k_sweep and fixed pricing")
 	flag.IntVar(&opts.tileGridCols, "tile-grid-cols", 100, "tile grid columns/rows passed to k_sweep region stats")
 	flag.StringVar(&opts.tileStatsCSVPath, "tile-stats-csv", "", "optional tile stats CSV path passed to k_sweep")
 	flag.StringVar(&opts.regionMapCSVPath, "region-map-csv", "", "optional region map CSV path passed to k_sweep")
@@ -129,11 +156,17 @@ func run(opts options) error {
 	if opts.priceCap < opts.priceFloor {
 		return fmt.Errorf("-price-cap must be greater than or equal to -price-floor")
 	}
+	if opts.pickupHotWeight < 0 {
+		return fmt.Errorf("-pickup-hot-weight must be non-negative")
+	}
 	if opts.coldDropoffPenalty < 0 {
 		return fmt.Errorf("-cold-dropoff-penalty must be non-negative")
 	}
 	if opts.hotDropoffDiscount < 0 {
 		return fmt.Errorf("-hot-dropoff-discount must be non-negative")
+	}
+	if opts.pricingMode != "linear" && opts.pricingMode != "diminishing" {
+		return fmt.Errorf("-pricing-mode must be linear or diminishing")
 	}
 	if opts.tileGridCols <= 0 {
 		return fmt.Errorf("-tile-grid-cols must be positive")
@@ -182,6 +215,12 @@ func run(opts options) error {
 		"global_cold_dropoff_requests",
 		"global_hot_dropoff_rate",
 		"global_cold_dropoff_rate",
+		"pricing_mode",
+		"avg_price_factor",
+		"max_price_factor",
+		"estimated_priced_revenue",
+		"estimated_priced_net_revenue",
+		"priced_net_delta",
 	)
 	if opts.zoneFixedPricing {
 		header = append(header,
@@ -200,15 +239,15 @@ func run(opts options) error {
 	if opts.hotspotTrials > 0 {
 		header = append(header,
 			"trial",
-			"pickup_hot_weight",
-			"dropoff_hot_discount",
-			"cold_dropoff_penalty",
-			"pricing_mode",
-			"avg_price_factor",
-			"max_price_factor",
-			"hotspot_completed_revenue",
-			"hotspot_net_revenue",
-			"hotspot_net_delta",
+			"trial_pickup_hot_weight",
+			"trial_dropoff_hot_discount",
+			"trial_cold_dropoff_penalty",
+			"trial_pricing_mode",
+			"trial_avg_price_factor",
+			"trial_max_price_factor",
+			"trial_hotspot_completed_revenue",
+			"trial_hotspot_net_revenue",
+			"trial_hotspot_net_delta",
 		)
 	}
 	if err := writer.Write(header); err != nil {
@@ -246,6 +285,18 @@ func run(opts options) error {
 		estimatedPickupKm := appliedPickupCost / opts.secondsPerDistanceUnit * opts.kmPerDegree
 		estimatedPickupCost := estimatedPickupKm * opts.pickupCostPerKm
 		estimatedNetRevenue := estimatedCompletedRevenue - estimatedPickupCost
+		fixedPricing := summarizePricing(requests, hotspot, pricingParams{
+			farePerKm:              opts.farePerKm,
+			pickupCostPerKm:        opts.pickupCostPerKm,
+			kmPerDegree:            opts.kmPerDegree,
+			secondsPerDistanceUnit: opts.secondsPerDistanceUnit,
+			pickupHotWeight:        opts.pickupHotWeight,
+			coldDropoffPenalty:     opts.coldDropoffPenalty,
+			hotDropoffDiscount:     opts.hotDropoffDiscount,
+			priceFloor:             opts.priceFloor,
+			priceCap:               opts.priceCap,
+			mode:                   opts.pricingMode,
+		}, completionRate, appliedPickupCost, estimatedNetRevenue)
 
 		baseOutput := append([]string{}, row.values...)
 		baseOutput = append(baseOutput,
@@ -264,6 +315,12 @@ func run(opts options) error {
 			strconv.Itoa(stats.coldDropoffRequests),
 			formatFloat(stats.hotDropoffRate),
 			formatFloat(stats.coldDropoffRate),
+			fixedPricing.mode,
+			formatFloat(fixedPricing.avgPriceFactor),
+			formatFloat(fixedPricing.maxPriceFactor),
+			formatFloat(fixedPricing.completedRevenue),
+			formatFloat(fixedPricing.netRevenue),
+			formatFloat(fixedPricing.netDelta),
 		)
 		if opts.zoneFixedPricing {
 			zoneStats := zoneFixedRevenue(requests, hotspot, completionRate,
