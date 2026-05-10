@@ -68,6 +68,9 @@ go run . `
   -tile-stats ..\..\build-local\perf-sweeps-grid-sweep-smoke\normalized\grid_200\limit_1000\tile_stats.csv `
   -sample-order-count 12 `
   -sample-seed 20260510 `
+  -pickup-hot-weight 0.15 `
+  -cold-dropoff-penalty 0.20 `
+  -hot-dropoff-discount 0.10 `
   -output-dir ..\..\web\map_viewer\public\data\replay
 ```
 
@@ -104,6 +107,8 @@ When replay artifacts exist, the viewer loads
   shows representative orders. Selecting one highlights its route when live
   route/path artifacts are available, plus pickup/dropoff points and related
   tiles. The sample file is display-only and does not change dispatch results.
+  When generated with `-tile-stats`, each sample also includes an explanatory
+  pricing estimate with base fare, price factor, pickup cost, and estimated net.
 
 ## Generate live route GeoJSON
 

@@ -33,8 +33,10 @@ type options struct {
 	pickupCostPerKm        float64
 	kmPerDegree            float64
 	hotspotTrials          int
+	pickupHotWeight        float64
 	priceFloor             float64
 	priceCap               float64
+	pricingMode            string
 	coldDropoffPenalty     float64
 	hotDropoffDiscount     float64
 	zoneFixedPricing       bool
@@ -78,10 +80,12 @@ func main() {
 	flag.Float64Var(&opts.pickupCostPerKm, "pickup-cost-per-km", 1.0, "cost per pickup/deadhead kilometer")
 	flag.Float64Var(&opts.kmPerDegree, "km-per-degree", 111.0, "rough conversion from replay degree distance to kilometers")
 	flag.IntVar(&opts.hotspotTrials, "hotspot-trials", 0, "random hotspot pricing trials per sweep row")
+	flag.Float64Var(&opts.pickupHotWeight, "pickup-hot-weight", 0.15, "fixed pricing pickup hotspot weight")
 	flag.Float64Var(&opts.priceFloor, "price-floor", 0.8, "minimum hotspot price factor")
 	flag.Float64Var(&opts.priceCap, "price-cap", 1.8, "maximum hotspot price factor")
-	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "opportunity cold dropoff penalty passed to k_sweep")
-	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "opportunity hot dropoff discount passed to k_sweep")
+	flag.StringVar(&opts.pricingMode, "pricing-mode", "linear", "fixed pricing mode: linear or diminishing")
+	flag.Float64Var(&opts.coldDropoffPenalty, "cold-dropoff-penalty", 0.20, "opportunity cold dropoff penalty passed to k_sweep and fixed pricing")
+	flag.Float64Var(&opts.hotDropoffDiscount, "hot-dropoff-discount", 0.10, "opportunity hot dropoff discount passed to k_sweep and fixed pricing")
 	flag.BoolVar(&opts.zoneFixedPricing, "zone-fixed-pricing", false, "estimate fixed per-trip pricing by hot/cold pickup/dropoff zones")
 	flag.Float64Var(&opts.zoneFixedBaseFare, "zone-fixed-base-fare", 1.0, "base fare for zone-fixed pricing")
 	flag.Float64Var(&opts.hotHotFactor, "hot-hot-factor", 1.2, "zone-fixed factor for hot pickup to hot dropoff")
@@ -119,11 +123,17 @@ func run(opts options) error {
 	if opts.secondsPerDistanceUnit <= 0 {
 		return fmt.Errorf("-seconds-per-distance-unit must be positive")
 	}
+	if opts.pickupHotWeight < 0 {
+		return fmt.Errorf("-pickup-hot-weight must be non-negative")
+	}
 	if opts.coldDropoffPenalty < 0 {
 		return fmt.Errorf("-cold-dropoff-penalty must be non-negative")
 	}
 	if opts.hotDropoffDiscount < 0 {
 		return fmt.Errorf("-hot-dropoff-discount must be non-negative")
+	}
+	if opts.pricingMode != "linear" && opts.pricingMode != "diminishing" {
+		return fmt.Errorf("-pricing-mode must be linear or diminishing")
 	}
 	if opts.zoneFixedBaseFare < 0 {
 		return fmt.Errorf("-zone-fixed-base-fare must be non-negative")
@@ -331,8 +341,10 @@ func runExperiment(opts options, experimentsDir string, kSweepPath string, paths
 		"-km-per-degree", strconv.FormatFloat(opts.kmPerDegree, 'f', -1, 64),
 		"-hotspot-trials", strconv.Itoa(opts.hotspotTrials),
 		"-seed", strconv.FormatInt(opts.seed, 10),
+		"-pickup-hot-weight", strconv.FormatFloat(opts.pickupHotWeight, 'f', -1, 64),
 		"-price-floor", strconv.FormatFloat(opts.priceFloor, 'f', -1, 64),
 		"-price-cap", strconv.FormatFloat(opts.priceCap, 'f', -1, 64),
+		"-pricing-mode", opts.pricingMode,
 		"-cold-dropoff-penalty", strconv.FormatFloat(opts.coldDropoffPenalty, 'f', -1, 64),
 		"-hot-dropoff-discount", strconv.FormatFloat(opts.hotDropoffDiscount, 'f', -1, 64),
 		"-tile-grid-cols", strconv.Itoa(gridCols),

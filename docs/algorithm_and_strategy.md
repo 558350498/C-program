@@ -288,8 +288,8 @@ opportunity_adjustment =
 
 其中：
 
-- `cold_dropoff_penalty` 默认 1.0，可通过 CLI 调整。
-- `hot_dropoff_discount` 默认 1.0，可通过 CLI 调整。
+- `cold_dropoff_penalty` 默认 0.20，可通过 CLI 调整。
+- `hot_dropoff_discount` 默认 0.10，可通过 CLI 调整。
 - `cold_dropoff = 1 - dropoff_hotspot`。
 - `dropoff_hotspot` 来自 pickup tile heat side table。
 
@@ -304,6 +304,21 @@ opportunity_adjustment =
 - `hot_dropoff_avg_pickup_cost`
 - `cold_dropoff_avg_pickup_cost`
 - `opportunity_adjustment_avg`
+
+当前固定计价实验默认使用：
+
+```text
+price_factor = clamp(
+  1
+  + 0.15 * pickup_hotspot
+  + 0.20 * cold_dropoff
+  - 0.10 * dropoff_hotspot,
+  0.8,
+  1.8
+)
+```
+
+这套计价只进入 Go 实验报表和抽样订单解释，不改变 replay、候选边或 MCMF cost。
 
 ### Hot/Cold 固定单价验证
 

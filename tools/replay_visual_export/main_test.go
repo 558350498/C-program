@@ -23,7 +23,7 @@ func TestRunExportAutoLive(t *testing.T) {
 	writeFile(t, outcomes, "request_id,pending_batch_count,candidate_batch_count,candidate_edge_count,has_candidate_edge,assigned,completed,taxi_id,assignment_time,pickup_time,completion_time,wait_time,pickup_cost\nr1,1,1,1,1,1,1,t1,0,30,90,0,30\nr2,1,0,0,0,0,0,-1,-1,-1,-1,0,0\n")
 	writeFile(t, batches, "batch_time,available_drivers,pending_requests,candidate_edges,applied_assignments\n0,1,1,1,1\n30,0,1,0,0\n")
 
-	err := runExport(config{
+	err := runExport(withTestPricing(config{
 		requestsPath:        requests,
 		driversPath:         drivers,
 		requestOutcomesPath: outcomes,
@@ -31,7 +31,7 @@ func TestRunExportAutoLive(t *testing.T) {
 		outputDir:           outputDir,
 		liveThreshold:       1000,
 		mode:                "auto",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("runExport failed: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestRunExportAutoBatch(t *testing.T) {
 	writeFile(t, outcomes, "request_id,pending_batch_count,candidate_batch_count,candidate_edge_count,has_candidate_edge,assigned,completed,taxi_id,assignment_time,pickup_time,completion_time,wait_time,pickup_cost\nr1,1,1,1,1,1,1,t1,0,30,90,0,30\nr2,1,1,1,1,1,0,t1,120,150,150,110,30\n")
 	writeFile(t, batches, "batch_time,available_drivers,pending_requests,candidate_edges,applied_assignments\n0,1,1,1,1\n120,1,1,1,1\n180,0,0,0,0\n")
 
-	err := runExport(config{
+	err := runExport(withTestPricing(config{
 		requestsPath:        requests,
 		driversPath:         drivers,
 		requestOutcomesPath: outcomes,
@@ -79,7 +79,7 @@ func TestRunExportAutoBatch(t *testing.T) {
 		liveThreshold:       1,
 		batchWindowSeconds:  60,
 		mode:                "auto",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("runExport failed: %v", err)
 	}
@@ -146,18 +146,26 @@ func TestRunExportWritesSampleOrderExplanations(t *testing.T) {
 	writeFile(t, tileStats, "tile_id,pickup_count,dropoff_count,available_driver_count,hotspot_score,cold_score\n1,1,0,1,0.20,0.80\n2,0,1,0,0.80,0.20\n3,1,0,0,0.10,0.90\n4,0,1,0,0.05,0.95\n5,1,0,0,0.40,0.60\n6,0,1,0,0.00,1.00\n7,1,0,0,0.70,0.30\n8,0,1,0,0.60,0.40\n")
 
 	err := runExport(config{
-		requestsPath:        requests,
-		driversPath:         drivers,
-		requestOutcomesPath: outcomes,
-		batchLogsPath:       batches,
-		outputDir:           outputDir,
-		liveThreshold:       1000,
-		mode:                "auto",
-		sampleOrderCount:    4,
-		sampleSeed:          7,
-		tileStatsPath:       tileStats,
-		coldDropoffPenalty:  2,
-		hotDropoffDiscount:  0.5,
+		requestsPath:           requests,
+		driversPath:            drivers,
+		requestOutcomesPath:    outcomes,
+		batchLogsPath:          batches,
+		outputDir:              outputDir,
+		liveThreshold:          1000,
+		mode:                   "auto",
+		sampleOrderCount:       4,
+		sampleSeed:             7,
+		tileStatsPath:          tileStats,
+		farePerKm:              2,
+		pickupCostPerKm:        0.5,
+		kmPerDegree:            100,
+		secondsPerDistanceUnit: 1000,
+		pickupHotWeight:        0.1,
+		coldDropoffPenalty:     2,
+		hotDropoffDiscount:     0.5,
+		priceFloor:             0.8,
+		priceCap:               2.5,
+		pricingMode:            "linear",
 	})
 	if err != nil {
 		t.Fatalf("runExport failed: %v", err)
@@ -189,6 +197,9 @@ func TestRunExportWritesSampleOrderExplanations(t *testing.T) {
 	if mathAbs(*coldSample.OpportunityAdjustment-want) > 0.000001 {
 		t.Fatalf("opportunity adjustment = %f, want %f", *coldSample.OpportunityAdjustment, want)
 	}
+	if mathAbs(coldSample.Pricing.EstimatedNet-(coldSample.Pricing.EstimatedRevenue-coldSample.Pricing.EstimatedPickupCost)) > 0.000001 {
+		t.Fatalf("pricing net mismatch: %+v", coldSample.Pricing)
+	}
 }
 
 func TestBuildSampleOrderExplanationsWithoutTileStats(t *testing.T) {
@@ -199,12 +210,26 @@ func TestBuildSampleOrderExplanationsWithoutTileStats(t *testing.T) {
 		{RequestID: "r1", Assigned: true, Completed: true, TaxiID: "t1", HasCandidateEdge: true},
 	}
 
-	samples := buildSampleOrderExplanations(requests, outcomes, nil, 1, 1, 1, 1)
+	samples := buildSampleOrderExplanations(requests, outcomes, nil, 1, 1, pricingParams{
+		FarePerKm:              1,
+		PickupCostPerKm:        1,
+		KmPerDegree:            111,
+		SecondsPerDistanceUnit: 100000,
+		PickupHotWeight:        0.15,
+		ColdDropoffPenalty:     0.20,
+		HotDropoffDiscount:     0.10,
+		PriceFloor:             0.8,
+		PriceCap:               1.8,
+		Mode:                   "linear",
+	})
 	if len(samples) != 1 {
 		t.Fatalf("sample count = %d, want 1", len(samples))
 	}
 	if samples[0].DropoffHotspotScore != nil || samples[0].OpportunityAdjustment != nil {
 		t.Fatalf("tile-derived fields should be nil without tile stats: %+v", samples[0])
+	}
+	if samples[0].Pricing.PriceFactor != 1 {
+		t.Fatalf("price factor without tile stats = %f, want 1", samples[0].Pricing.PriceFactor)
 	}
 }
 
@@ -287,6 +312,20 @@ func findTile(frame replayBatchTileFrame, tileID int) replayBatchTileActivity {
 		}
 	}
 	return replayBatchTileActivity{}
+}
+
+func withTestPricing(cfg config) config {
+	cfg.farePerKm = 1
+	cfg.pickupCostPerKm = 1
+	cfg.kmPerDegree = 111
+	cfg.secondsPerDistanceUnit = 100000
+	cfg.pickupHotWeight = 0.15
+	cfg.coldDropoffPenalty = 0.20
+	cfg.hotDropoffDiscount = 0.10
+	cfg.priceFloor = 0.8
+	cfg.priceCap = 1.8
+	cfg.pricingMode = "linear"
+	return cfg
 }
 
 func hasSampleWithTag(samples []sampleOrderExplanation, tag string) bool {

@@ -92,13 +92,13 @@ type pricingParams struct {
 }
 
 type pricingSummary struct {
-	mode            string
-	avgPriceFactor  float64
-	maxPriceFactor  float64
-	possibleRevenue float64
+	mode             string
+	avgPriceFactor   float64
+	maxPriceFactor   float64
+	possibleRevenue  float64
 	completedRevenue float64
-	netRevenue      float64
-	netDelta        float64
+	netRevenue       float64
+	netDelta         float64
 }
 
 func main() {

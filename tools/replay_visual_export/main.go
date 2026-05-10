@@ -20,22 +20,39 @@ const (
 	defaultBatchWindowSeconds = 600
 	defaultSampleOrderCount   = 12
 	defaultSampleSeed         = 20260510
+	defaultFarePerKm          = 1.0
+	defaultPickupCostPerKm    = 1.0
+	defaultKmPerDegree        = 111.0
+	defaultPickupHotWeight    = 0.15
+	defaultColdDropoffPenalty = 0.20
+	defaultHotDropoffDiscount = 0.10
+	defaultPriceFloor         = 0.8
+	defaultPriceCap           = 1.8
+	defaultPricingMode        = "linear"
 )
 
 type config struct {
-	requestsPath        string
-	driversPath         string
-	requestOutcomesPath string
-	batchLogsPath       string
-	outputDir           string
-	liveThreshold       int
-	batchWindowSeconds  int
-	mode                string
-	sampleOrderCount    int
-	sampleSeed          int64
-	tileStatsPath       string
-	coldDropoffPenalty  float64
-	hotDropoffDiscount  float64
+	requestsPath           string
+	driversPath            string
+	requestOutcomesPath    string
+	batchLogsPath          string
+	outputDir              string
+	liveThreshold          int
+	batchWindowSeconds     int
+	mode                   string
+	sampleOrderCount       int
+	sampleSeed             int64
+	tileStatsPath          string
+	farePerKm              float64
+	pickupCostPerKm        float64
+	kmPerDegree            float64
+	secondsPerDistanceUnit float64
+	pickupHotWeight        float64
+	coldDropoffPenalty     float64
+	hotDropoffDiscount     float64
+	priceFloor             float64
+	priceCap               float64
+	pricingMode            string
 }
 
 type requestRow struct {
@@ -131,29 +148,56 @@ type tileStatsRow struct {
 	ColdScore    float64
 }
 
+type pricingParams struct {
+	FarePerKm              float64
+	PickupCostPerKm        float64
+	KmPerDegree            float64
+	SecondsPerDistanceUnit float64
+	PickupHotWeight        float64
+	ColdDropoffPenalty     float64
+	HotDropoffDiscount     float64
+	PriceFloor             float64
+	PriceCap               float64
+	Mode                   string
+}
+
+type pricingExplanation struct {
+	Mode                   string   `json:"mode"`
+	BaseRevenue            float64  `json:"base_revenue"`
+	PriceFactor            float64  `json:"price_factor"`
+	PickupHotspotComponent *float64 `json:"pickup_hotspot_component"`
+	ColdDropoffComponent   *float64 `json:"cold_dropoff_component"`
+	HotDropoffComponent    *float64 `json:"hot_dropoff_component"`
+	EstimatedRevenue       float64  `json:"estimated_revenue"`
+	EstimatedPickupKm      float64  `json:"estimated_pickup_km"`
+	EstimatedPickupCost    float64  `json:"estimated_pickup_cost"`
+	EstimatedNet           float64  `json:"estimated_net"`
+}
+
 type sampleOrderExplanation struct {
-	RequestID             string      `json:"request_id"`
-	TaxiID                string      `json:"taxi_id"`
-	Status                string      `json:"status"`
-	ReasonTags            []string    `json:"reason_tags"`
-	RequestTime           int         `json:"request_time"`
-	AssignmentTime        int         `json:"assignment_time"`
-	PickupTime            int         `json:"pickup_time"`
-	CompletionTime        int         `json:"completion_time"`
-	WaitTime              int         `json:"wait_time"`
-	PickupCost            int         `json:"pickup_cost"`
-	PendingBatchCount     int         `json:"pending_batch_count"`
-	CandidateBatchCount   int         `json:"candidate_batch_count"`
-	CandidateEdgeCount    int         `json:"candidate_edge_count"`
-	HasCandidateEdge      bool        `json:"has_candidate_edge"`
-	Pickup                samplePoint `json:"pickup"`
-	Dropoff               samplePoint `json:"dropoff"`
-	TripDistance          float64     `json:"trip_distance"`
-	PickupHotspotScore    *float64    `json:"pickup_hotspot_score"`
-	PickupColdScore       *float64    `json:"pickup_cold_score"`
-	DropoffHotspotScore   *float64    `json:"dropoff_hotspot_score"`
-	DropoffColdScore      *float64    `json:"dropoff_cold_score"`
-	OpportunityAdjustment *float64    `json:"opportunity_adjustment"`
+	RequestID             string             `json:"request_id"`
+	TaxiID                string             `json:"taxi_id"`
+	Status                string             `json:"status"`
+	ReasonTags            []string           `json:"reason_tags"`
+	RequestTime           int                `json:"request_time"`
+	AssignmentTime        int                `json:"assignment_time"`
+	PickupTime            int                `json:"pickup_time"`
+	CompletionTime        int                `json:"completion_time"`
+	WaitTime              int                `json:"wait_time"`
+	PickupCost            int                `json:"pickup_cost"`
+	PendingBatchCount     int                `json:"pending_batch_count"`
+	CandidateBatchCount   int                `json:"candidate_batch_count"`
+	CandidateEdgeCount    int                `json:"candidate_edge_count"`
+	HasCandidateEdge      bool               `json:"has_candidate_edge"`
+	Pickup                samplePoint        `json:"pickup"`
+	Dropoff               samplePoint        `json:"dropoff"`
+	TripDistance          float64            `json:"trip_distance"`
+	PickupHotspotScore    *float64           `json:"pickup_hotspot_score"`
+	PickupColdScore       *float64           `json:"pickup_cold_score"`
+	DropoffHotspotScore   *float64           `json:"dropoff_hotspot_score"`
+	DropoffColdScore      *float64           `json:"dropoff_cold_score"`
+	OpportunityAdjustment *float64           `json:"opportunity_adjustment"`
+	Pricing               pricingExplanation `json:"pricing"`
 }
 
 type samplePoint struct {
@@ -202,8 +246,16 @@ func main() {
 	flag.IntVar(&cfg.sampleOrderCount, "sample-order-count", defaultSampleOrderCount, "Representative order explanations to write; 0 disables sampled_order_explanations.json")
 	flag.Int64Var(&cfg.sampleSeed, "sample-seed", defaultSampleSeed, "Random seed for reproducible sample order fill")
 	flag.StringVar(&cfg.tileStatsPath, "tile-stats", "", "Optional tile_stats.csv path for hot/cold explanation fields")
-	flag.Float64Var(&cfg.coldDropoffPenalty, "cold-dropoff-penalty", 1.0, "Opportunity cold dropoff penalty for sampled order explanations")
-	flag.Float64Var(&cfg.hotDropoffDiscount, "hot-dropoff-discount", 1.0, "Opportunity hot dropoff discount for sampled order explanations")
+	flag.Float64Var(&cfg.farePerKm, "fare-per-km", defaultFarePerKm, "fare revenue per completed trip kilometer for sampled pricing")
+	flag.Float64Var(&cfg.pickupCostPerKm, "pickup-cost-per-km", defaultPickupCostPerKm, "cost per pickup/deadhead kilometer for sampled pricing")
+	flag.Float64Var(&cfg.kmPerDegree, "km-per-degree", defaultKmPerDegree, "rough conversion from replay degree distance to kilometers for sampled pricing")
+	flag.Float64Var(&cfg.secondsPerDistanceUnit, "seconds-per-distance-unit", 100000.0, "pickup cost scale used by replay for sampled pricing")
+	flag.Float64Var(&cfg.pickupHotWeight, "pickup-hot-weight", defaultPickupHotWeight, "fixed pricing pickup hotspot weight")
+	flag.Float64Var(&cfg.coldDropoffPenalty, "cold-dropoff-penalty", defaultColdDropoffPenalty, "Opportunity cold dropoff penalty for sampled order explanations")
+	flag.Float64Var(&cfg.hotDropoffDiscount, "hot-dropoff-discount", defaultHotDropoffDiscount, "Opportunity hot dropoff discount for sampled order explanations")
+	flag.Float64Var(&cfg.priceFloor, "price-floor", defaultPriceFloor, "minimum sampled pricing factor")
+	flag.Float64Var(&cfg.priceCap, "price-cap", defaultPriceCap, "maximum sampled pricing factor")
+	flag.StringVar(&cfg.pricingMode, "pricing-mode", defaultPricingMode, "sampled pricing mode: linear or diminishing")
 	flag.Parse()
 
 	if err := runExport(cfg); err != nil {
@@ -283,7 +335,19 @@ func runExport(cfg config) error {
 		files = append(files, "replay_batches.json", "replay_batch_tiles.json")
 	}
 	if cfg.sampleOrderCount > 0 {
-		samples := buildSampleOrderExplanations(requests, outcomes, tileStats, cfg.sampleOrderCount, cfg.sampleSeed, cfg.coldDropoffPenalty, cfg.hotDropoffDiscount)
+		pricing := pricingParams{
+			FarePerKm:              cfg.farePerKm,
+			PickupCostPerKm:        cfg.pickupCostPerKm,
+			KmPerDegree:            cfg.kmPerDegree,
+			SecondsPerDistanceUnit: cfg.secondsPerDistanceUnit,
+			PickupHotWeight:        cfg.pickupHotWeight,
+			ColdDropoffPenalty:     cfg.coldDropoffPenalty,
+			HotDropoffDiscount:     cfg.hotDropoffDiscount,
+			PriceFloor:             cfg.priceFloor,
+			PriceCap:               cfg.priceCap,
+			Mode:                   cfg.pricingMode,
+		}
+		samples := buildSampleOrderExplanations(requests, outcomes, tileStats, cfg.sampleOrderCount, cfg.sampleSeed, pricing)
 		if err := writeJSON(filepath.Join(cfg.outputDir, "sampled_order_explanations.json"), samples); err != nil {
 			return err
 		}
@@ -323,6 +387,9 @@ func withDefaults(cfg config) config {
 	if cfg.sampleSeed == 0 {
 		cfg.sampleSeed = defaultSampleSeed
 	}
+	if cfg.pricingMode == "" {
+		cfg.pricingMode = defaultPricingMode
+	}
 	return cfg
 }
 
@@ -355,11 +422,33 @@ func validateConfig(cfg config) error {
 	if cfg.sampleOrderCount < 0 {
 		return errors.New("-sample-order-count must be non-negative")
 	}
-	if math.IsNaN(cfg.coldDropoffPenalty) || math.IsInf(cfg.coldDropoffPenalty, 0) {
-		return errors.New("-cold-dropoff-penalty must be finite")
+	if cfg.farePerKm < 0 || math.IsNaN(cfg.farePerKm) || math.IsInf(cfg.farePerKm, 0) ||
+		cfg.pickupCostPerKm < 0 || math.IsNaN(cfg.pickupCostPerKm) || math.IsInf(cfg.pickupCostPerKm, 0) {
+		return errors.New("fare and cost values must be non-negative")
 	}
-	if math.IsNaN(cfg.hotDropoffDiscount) || math.IsInf(cfg.hotDropoffDiscount, 0) {
-		return errors.New("-hot-dropoff-discount must be finite")
+	if cfg.kmPerDegree <= 0 || math.IsNaN(cfg.kmPerDegree) || math.IsInf(cfg.kmPerDegree, 0) {
+		return errors.New("-km-per-degree must be positive")
+	}
+	if cfg.secondsPerDistanceUnit <= 0 || math.IsNaN(cfg.secondsPerDistanceUnit) || math.IsInf(cfg.secondsPerDistanceUnit, 0) {
+		return errors.New("-seconds-per-distance-unit must be positive")
+	}
+	if cfg.pickupHotWeight < 0 || math.IsNaN(cfg.pickupHotWeight) || math.IsInf(cfg.pickupHotWeight, 0) {
+		return errors.New("-pickup-hot-weight must be non-negative")
+	}
+	if cfg.coldDropoffPenalty < 0 || math.IsNaN(cfg.coldDropoffPenalty) || math.IsInf(cfg.coldDropoffPenalty, 0) {
+		return errors.New("-cold-dropoff-penalty must be non-negative")
+	}
+	if cfg.hotDropoffDiscount < 0 || math.IsNaN(cfg.hotDropoffDiscount) || math.IsInf(cfg.hotDropoffDiscount, 0) {
+		return errors.New("-hot-dropoff-discount must be non-negative")
+	}
+	if cfg.priceFloor <= 0 || math.IsNaN(cfg.priceFloor) || math.IsInf(cfg.priceFloor, 0) {
+		return errors.New("-price-floor must be positive")
+	}
+	if cfg.priceCap < cfg.priceFloor || math.IsNaN(cfg.priceCap) || math.IsInf(cfg.priceCap, 0) {
+		return errors.New("-price-cap must be greater than or equal to -price-floor")
+	}
+	if cfg.pricingMode != "linear" && cfg.pricingMode != "diminishing" {
+		return errors.New("-pricing-mode must be linear or diminishing")
 	}
 	return nil
 }
@@ -556,7 +645,7 @@ func buildBatchTileArtifacts(batches []batchLogRow, requests map[string]requestR
 	return frames, nil
 }
 
-func buildSampleOrderExplanations(requests map[string]requestRow, outcomes []outcomeRow, tileStats map[string]tileStatsRow, sampleCount int, sampleSeed int64, coldDropoffPenalty float64, hotDropoffDiscount float64) []sampleOrderExplanation {
+func buildSampleOrderExplanations(requests map[string]requestRow, outcomes []outcomeRow, tileStats map[string]tileStatsRow, sampleCount int, sampleSeed int64, pricing pricingParams) []sampleOrderExplanation {
 	if sampleCount <= 0 {
 		return nil
 	}
@@ -657,12 +746,12 @@ func buildSampleOrderExplanations(requests map[string]requestRow, outcomes []out
 	samples := make([]sampleOrderExplanation, 0, len(selected))
 	for _, outcome := range selected {
 		req := requests[outcome.RequestID]
-		samples = append(samples, sampleExplanation(req, outcome, reasons[outcome.RequestID], tileStats, coldDropoffPenalty, hotDropoffDiscount))
+		samples = append(samples, sampleExplanation(req, outcome, reasons[outcome.RequestID], tileStats, pricing))
 	}
 	return samples
 }
 
-func sampleExplanation(req requestRow, outcome outcomeRow, reasons []string, tileStats map[string]tileStatsRow, coldDropoffPenalty float64, hotDropoffDiscount float64) sampleOrderExplanation {
+func sampleExplanation(req requestRow, outcome outcomeRow, reasons []string, tileStats map[string]tileStatsRow, pricing pricingParams) sampleOrderExplanation {
 	var pickupHotspot, pickupCold, dropoffHotspot, dropoffCold, opportunityAdjustment *float64
 	if stats, ok := tileStats[req.PickupTile]; ok {
 		pickupHotspot = floatPtr(stats.HotspotScore)
@@ -671,7 +760,7 @@ func sampleExplanation(req requestRow, outcome outcomeRow, reasons []string, til
 	if stats, ok := tileStats[req.DropoffTile]; ok {
 		dropoffHotspot = floatPtr(stats.HotspotScore)
 		dropoffCold = floatPtr(stats.ColdScore)
-		adjustment := coldDropoffPenalty*stats.ColdScore - hotDropoffDiscount*stats.HotspotScore
+		adjustment := pricing.ColdDropoffPenalty*stats.ColdScore - pricing.HotDropoffDiscount*stats.HotspotScore
 		opportunityAdjustment = floatPtr(adjustment)
 	}
 
@@ -698,6 +787,47 @@ func sampleExplanation(req requestRow, outcome outcomeRow, reasons []string, til
 		DropoffHotspotScore:   dropoffHotspot,
 		DropoffColdScore:      dropoffCold,
 		OpportunityAdjustment: opportunityAdjustment,
+		Pricing:               priceSample(req, outcome, pickupHotspot, dropoffHotspot, dropoffCold, pricing),
+	}
+}
+
+func priceSample(req requestRow, outcome outcomeRow, pickupHotspot *float64, dropoffHotspot *float64, dropoffCold *float64, params pricingParams) pricingExplanation {
+	tripKm := haversineKm(req.PickupY, req.PickupX, req.DropoffY, req.DropoffX)
+	baseRevenue := tripKm * params.FarePerKm
+	estimatedPickupKm := float64(outcome.PickupCost) / params.SecondsPerDistanceUnit * params.KmPerDegree
+	estimatedPickupCost := estimatedPickupKm * params.PickupCostPerKm
+
+	priceFactor := 1.0
+	var pickupComponent, coldComponent, hotComponent *float64
+	if pickupHotspot != nil && dropoffHotspot != nil && dropoffCold != nil {
+		pickupHeat := *pickupHotspot
+		dropoffHeat := *dropoffHotspot
+		coldScore := *dropoffCold
+		if params.Mode == "diminishing" {
+			pickupHeat = diminishingReturn(pickupHeat)
+			dropoffHeat = diminishingReturn(dropoffHeat)
+			coldScore = diminishingReturn(coldScore)
+		}
+		pickupValue := params.PickupHotWeight * pickupHeat
+		coldValue := params.ColdDropoffPenalty * coldScore
+		hotValue := -params.HotDropoffDiscount * dropoffHeat
+		pickupComponent = floatPtr(pickupValue)
+		coldComponent = floatPtr(coldValue)
+		hotComponent = floatPtr(hotValue)
+		priceFactor = clamp(1.0+pickupValue+coldValue+hotValue, params.PriceFloor, params.PriceCap)
+	}
+	estimatedRevenue := baseRevenue * priceFactor
+	return pricingExplanation{
+		Mode:                   params.Mode,
+		BaseRevenue:            baseRevenue,
+		PriceFactor:            priceFactor,
+		PickupHotspotComponent: pickupComponent,
+		ColdDropoffComponent:   coldComponent,
+		HotDropoffComponent:    hotComponent,
+		EstimatedRevenue:       estimatedRevenue,
+		EstimatedPickupKm:      estimatedPickupKm,
+		EstimatedPickupCost:    estimatedPickupCost,
+		EstimatedNet:           estimatedRevenue - estimatedPickupCost,
 	}
 }
 
@@ -716,6 +846,48 @@ func tripDistance(req requestRow) float64 {
 	deltaLon := (req.DropoffX - req.PickupX) * math.Cos(averageLat)
 	deltaLat := req.DropoffY - req.PickupY
 	return math.Hypot(deltaLon, deltaLat)
+}
+
+func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const earthRadiusKm = 6371.0088
+	lat1Rad := degreesToRadians(lat1)
+	lat2Rad := degreesToRadians(lat2)
+	deltaLat := degreesToRadians(lat2 - lat1)
+	deltaLon := degreesToRadians(lon2 - lon1)
+	a := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) +
+		math.Cos(lat1Rad)*math.Cos(lat2Rad)*math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return earthRadiusKm * c
+}
+
+func degreesToRadians(value float64) float64 {
+	return value * math.Pi / 180
+}
+
+func diminishingReturn(value float64) float64 {
+	if value <= 0 {
+		return 0
+	}
+	if value <= 0.3 {
+		return value
+	}
+	if value <= 0.6 {
+		return 0.3 + (value-0.3)*0.8
+	}
+	if value <= 0.9 {
+		return 0.3 + 0.3*0.8 + (value-0.6)*0.5
+	}
+	return 0.3 + 0.3*0.8 + 0.3*0.5 + (value-0.9)*0.2
+}
+
+func clamp(value float64, minValue float64, maxValue float64) float64 {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 func appendUnique(values []string, value string) []string {

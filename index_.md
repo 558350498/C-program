@@ -210,6 +210,9 @@ Go raw CSV preprocess
 - `pricing_mode`
 - `avg_price_factor`
 - `max_price_factor`
+- `estimated_priced_revenue`
+- `estimated_priced_net_revenue`
+- `priced_net_delta`
 - `hotspot_net_delta`
 
 ### Replay CSV IO
