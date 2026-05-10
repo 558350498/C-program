@@ -642,6 +642,48 @@ func hotspotRevenue(requests []requestRow, table hotspotSideTable, farePerKm flo
 	return totalRevenue * completionRate, totalFactor / float64(len(requests)), maxFactor
 }
 
+func summarizePricing(requests []requestRow, table hotspotSideTable, params pricingParams, completionRate float64, appliedPickupCost float64, baselineNetRevenue float64) pricingSummary {
+	summary := pricingSummary{mode: params.mode}
+	if len(requests) == 0 {
+		summary.netDelta = -baselineNetRevenue
+		return summary
+	}
+	for _, request := range requests {
+		pickupHeat := normalizedHeat(table.pickupHeatByTile[request.pickupTile], table.maxPickupHeat)
+		dropoffHeat := normalizedHeat(table.pickupHeatByTile[request.dropoffTile], table.maxPickupHeat)
+		coldDropoff := 1.0 - dropoffHeat
+		factor := pricingFactor(pickupHeat, dropoffHeat, coldDropoff, params)
+		if factor > summary.maxPriceFactor {
+			summary.maxPriceFactor = factor
+		}
+		summary.avgPriceFactor += factor
+		summary.possibleRevenue += haversineKm(request.pickupLat, request.pickupLon, request.dropoffLat, request.dropoffLon) * params.farePerKm * factor
+	}
+	summary.avgPriceFactor /= float64(len(requests))
+	summary.completedRevenue = summary.possibleRevenue * completionRate
+	estimatedPickupKm := appliedPickupCost / params.secondsPerDistanceUnit * params.kmPerDegree
+	estimatedPickupCost := estimatedPickupKm * params.pickupCostPerKm
+	summary.netRevenue = summary.completedRevenue - estimatedPickupCost
+	summary.netDelta = summary.netRevenue - baselineNetRevenue
+	return summary
+}
+
+func pricingFactor(pickupHotspot float64, dropoffHotspot float64, coldDropoff float64, params pricingParams) float64 {
+	if params.mode == "diminishing" {
+		pickupHotspot = diminishingReturn(pickupHotspot)
+		dropoffHotspot = diminishingReturn(dropoffHotspot)
+		coldDropoff = diminishingReturn(coldDropoff)
+	}
+	return clamp(
+		1.0+
+			params.pickupHotWeight*pickupHotspot+
+			params.coldDropoffPenalty*coldDropoff-
+			params.hotDropoffDiscount*dropoffHotspot,
+		params.priceFloor,
+		params.priceCap,
+	)
+}
+
 func zoneFixedRevenue(requests []requestRow, table hotspotSideTable, completionRate float64, baselineCompletedRevenue float64, baseFare float64, hotHotFactor float64, coldColdFactor float64) zoneFixedStats {
 	stats := zoneFixedStats{}
 	if len(requests) == 0 {
