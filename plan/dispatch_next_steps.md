@@ -61,9 +61,11 @@
 - 轻量 tile/grid side table 第一版已落地到 C++：`TileGridStats` 统计 pickup/dropoff heat、初始 free driver count、hotspot/cold score，并接入 `k_sweep` hot/cold dropoff 分组；`k_sweep --tile-stats-csv` 可导出 tile 明细。
 - 受约束离线 UF region map 第一版已落地到 C++：`tile_region_map` 使用 `TileGridStats` 构建 `tile_id -> region_id`，`k_sweep --region-map-csv` / `--region-stats-csv` 可导出审计明细；region stats 已包含 bbox km 粗估，不影响 dispatch、候选生成或 MCMF cost。
 - 多分辨率 tile / region sweep 第一版已接入：Go preprocess 支持 `-tile-grid-cols`，`k_sweep` 支持 `--tile-grid-cols`，`go_batch_experiments` 支持 `-tile-grid-cols 100,200,400` 并按 `normalized/grid_<N>/limit_<M>` 保存 normalized CSV、tile stats、region map 和 region stats，同时输出 `grid_<N>/summary.csv`；总表新增 `tile_grid_cols`。
-- 当前空间网格路线已经收口为：`simpleTile(grid_cols)` 继续作为 baseline；H3 作为后续候选升级方向，等讨论清楚是否需要真实地理层级网格后再接入；地图瓦片和真实路由中间件继续后置。
+- 当前空间网格路线已经收口为：`simpleTile(grid_cols)` 继续作为 baseline；H3 作为后续候选升级方向，等讨论清楚是否需要真实地理层级网格后再接入；地图瓦片和真实路由中间件只服务展示层，不进入调度主链路。
 - MapLibre 前端 MVP 已接入：`web/map_viewer` 使用 Vite + React + TypeScript 在 `localhost:5173` 渲染本地 MapLibre 画布，并支持加载 `/data/tile_stats.geojson`；GeoJSON 不存在时回退到内置 sample 图层；当前已接入可关闭的在线 OSM raster 底图作为开发展示参考。
 - 文件式数据桥第一版已接入：`tools/geojson_export` 可把 `tile_stats.csv` 转成 `web/map_viewer/public/data/tile_stats.geojson`，也可从 `requests.csv` 生成 `tile_corner_witnesses.geojson`；前端通过 Vite 静态文件服务读取，不引入后端 API。
+- replay 可视化闭环已接入：`tools/replay_visual_export` 支持 1000 单以内 live mode 和大样本 batch mode，前端可显示 live playback、batch tick、最近窗口 tile activity overlay。
+- 展示层真实道路路线已跑通：本机 Docker OSRM `osrm-nyc` 监听 `127.0.0.1:5000`，`tools/route_visual_export` 已把 1000 单 live 样本生成 `replay_live_routes.geojson`，当前 `1998/1998` route feature 全部 routed，fallback 为 0；前端 Replay 面板显示 `ROUTE SOURCE routes` 并沿 polyline 插值 taxi 点。
 
 ## 当前数据流
 
@@ -78,6 +80,8 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
   -> format_dispatch_replay_report
   -> request outcomes / k_sweep grouped metrics
   -> tools/geojson_export
+  -> tools/replay_visual_export
+  -> tools/route_visual_export
   -> web/map_viewer
 ```
 
@@ -96,24 +100,24 @@ data/datasets/nyc-taxi-trip-duration/raw/NYC.csv
 5. 已完成 `tile_stats.csv -> tile_stats.geojson -> MapLibre tile layer`，真实 tile 热度方格已经可视化。
 6. 已完成 `requests.csv -> tile_corner_witnesses.geojson`，hover tile 时显示四角最近 pickup witness，解释粗格子覆盖水面/不可行区域的原因。
 7. 已完成 replay artifact 和前端 replay 面板：小样本 live playback、大样本 batch tick / tile activity overlay。
-8. 已完成展示层路线导出与 polyline 插值框架：`tools/route_visual_export` 可把 live replay 虚空线段映射成 `replay_live_routes.geojson`，前端会优先沿 polyline 插值移动 taxi 点；暂不改变 C++ replay、MCMF cost 或 pickup_cost。
-9. tile / replay 展示稳定后，再接 `region_stats.csv` / `region_map.csv`，形成区域审计展示闭环。
-10. 地图完成后，再回到计价因子：先整理已有里程收入、接驾成本、hot/cold fixed pricing、opportunity adjustment，再决定是否增加更复杂的时间、拥堵、区域、供需因子。
-11. 讨论是否抽象 `CellIndex`：先让 `simpleTile` 实现，如果确实需要更专业地理网格，再增加 H3 实现。
-12. indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
+8. 已完成展示层路线导出与 polyline 插值闭环：`tools/route_visual_export` 可把 live replay 虚空线段映射成 `replay_live_routes.geojson`，本机 OSRM 已验证 1000 单 live 样本 `routed=1998 / fallback=0`；前端会优先沿 polyline 插值移动 taxi 点；暂不改变 C++ replay、MCMF cost 或 pickup_cost。
+9. 下一步优先做抽样订单解释：从 `request_outcomes.csv`、live points、live routes 和 replay manifest 中抽取少量代表性订单，用来解释计价逻辑、热区/冷区、接驾成本和路线；不做订单管理系统。
+10. 抽样订单解释稳定后，再接 `region_stats.csv` / `region_map.csv`，形成区域审计展示闭环。
+11. 地图和订单解释完成后，再回到计价因子：先整理已有里程收入、接驾成本、hot/cold fixed pricing、opportunity adjustment，再决定是否增加更复杂的时间、拥堵、区域、供需因子。
+12. `CellIndex` / H3 保持候选升级方向，暂不重构；indexed 后续只在需要替换候选生成器、做 top-k 空间查询或接入统一 `ISpatialIndex` 时继续优化。
 
 暂缓：
 
 - 完整格点地图路径规划。
-- 真实道路最短路。
+- 把真实道路 ETA / 最短路写进调度主链路。
 - 把机会成本写进 MCMF cost。
 - Tarjan / SCC 自适应区域缩点。
 - 将 UF region map 接入派单硬边界或 MCMF cost。
 - 每个 batch 动态重划 region map。
 - 继续为 indexed 做底层性能微调，除非 scan + finite k 已经不能支撑目标样本。
 - 在 100/200/400 多分辨率数据跑完前，先不写 region 清洗算法或自适应 tile。
-- 当前可接 OSM/OSRM/GraphHopper/Valhalla 作为展示层路线 artifact 来源，但不要把真实道路 ETA 写进候选边、MCMF cost 或 replay 状态机；当前在线 raster 底图仍只作为前端展示参考。
-- 在地图展示闭环完成前，先不继续叠复杂计价因子、Redis/RedisGeo、WebSocket 实时流或外部 GIS 中间件。
+- 当前 OSRM 只作为展示层路线 artifact 来源；不要把真实道路 ETA 写进候选边、MCMF cost 或 replay 状态机；当前在线 raster 底图仍只作为前端展示参考。
+- 在抽样订单解释完成前，先不继续叠复杂计价因子、Redis/RedisGeo、WebSocket 实时流或外部 GIS 中间件。
 
 ### 1. 空间索引抽象与 KD-Tree 侧表化
 
@@ -182,7 +186,7 @@ nearest_k(center, k) -> vector<SpatialQueryResult>
 - Go 预处理。
 - 在线服务。
 - 数据库。
-- 真实道路最短路。
+- 调度层真实道路最短路 / ETA。
 
 已新增工具：
 
@@ -400,7 +404,7 @@ C-program/
 - API / Socket / WebSocket。
 - 多线程 CSV 读取。
 - 多线程 replay。
-- 完整真实道路最短路。
+- 把真实道路最短路 / ETA 写进 dispatch 主链路。
 - 完整格点路径规划。
 - Tarjan / SCC 区域缩点。
 - 每个 batch 动态重划 region map。
@@ -428,7 +432,7 @@ C-program/
 - C++ 负责调度核心和 replay。
 - 不为了未来服务化提前污染当前接口。
 
-## 当前可视化下一步：Replay artifact 导出器
+## 当前可视化状态：Replay artifact 导出器
 
 已新增 `tools/replay_visual_export`，把 replay CSV 产物转换成前端静态 artifact：
 
@@ -443,13 +447,13 @@ requests.csv + drivers.csv + request_outcomes.csv + batch_logs.csv
 - `<= 1000 requests`：live mode，输出逐单虚空行走路径和 pickup/dropoff 点。
 - `> 1000 requests`：batch mode，输出 batch 时间线和累计 assigned/completed 指标，不输出全量轨迹。
 
-接下来的前端工作应先读取 `replay_manifest.json`，按 `mode` 决定 UI：小样本走 live playback，大样本走 batch tick / 聚合状态展示。真实道路路线、WebSocket、RedisGeo 和后端 API 继续后置。
+前端已读取 `replay_manifest.json`，按 `mode` 决定 UI：小样本走 live playback，大样本走 batch tick / 聚合状态展示。WebSocket、RedisGeo 和后端 API 继续后置。
 
 前端第一步已接入：
 
 - `web/map_viewer` 启动时读取 `/data/replay/replay_manifest.json`。
 - batch mode 加载 `/data/replay/replay_batches.json` 和 `/data/replay/replay_batch_tiles.json`，提供 batch tick 滑块、播放游标、当前 batch 聚合指标和最近 600 秒 tile activity overlay。
-- live mode 加载 `/data/replay/replay_live_paths.geojson` 和 `/data/replay/replay_live_points.geojson`，提供时间滑块、播放游标、虚空行走活跃路径、插值 taxi 点和最近 pickup/dropoff 事件点。
+- live mode 加载 `/data/replay/replay_live_paths.geojson`、`/data/replay/replay_live_points.geojson`，并优先加载 `/data/replay/replay_live_routes.geojson`，提供时间滑块、播放游标、活跃路径、沿 polyline 插值 taxi 点和最近 pickup/dropoff 事件点。
 - 当前仍不画全量大样本轨迹，也不引入后端 API。
 
 ## 当前可视化状态：真实路网视觉路线 artifact
@@ -474,9 +478,41 @@ replay_live_paths.geojson
 
 当前验收目标：
 
-- 1000 单 live 样本能生成 `replay_live_routes.geojson`。
-- 前端 live replay 能优先加载 routes，并显示 routed / fallback 数量。
+- 1000 单 live 样本已生成 `replay_live_routes.geojson`。
+- 本机 OSRM `osrm-nyc` 已跑通，监听 `127.0.0.1:5000`。
+- 当前样本 route feature 数等于 live path feature 数：`1998 -> 1998`。
+- 当前样本 routed / fallback：`1998 / 0`。
+- 前端 live replay 已优先加载 routes，并显示 routed / fallback 数量。
 - 路由失败不会导致整场 replay 加载失败。
 - 不引入后端 API、WebSocket、Redis 或调度层真实 ETA。
 
-后续如果要真正看到道路级轨迹，需要先启动本地 OSRM / GraphHopper / Valhalla，再重新运行 `tools/route_visual_export` 生成 routed geometry；当前没有本地 router 时会得到全 fallback artifact。
+后续如果重启机器，需要先确认 Docker Desktop 和 `osrm-nyc` 容器状态，再重新运行 `tools/route_visual_export` 生成 routed geometry；没有本地 router 时仍会得到 fallback artifact。
+
+## 下一步候选：抽样订单解释
+
+当前地图展示已经有 tile、witness、batch activity 和 live route polyline。下一步不做订单管理系统，而是做一个面向计价逻辑的抽样解释层：从 replay 结果里挑少量订单，把它们作为案例说明“这单为什么这样派、成本在哪、热区/冷区如何影响解释”。
+
+```text
+request_outcomes.csv
+  + replay_live_points.geojson
+  + replay_live_routes.geojson
+  + replay_manifest.json
+  -> sampled_order_explanations.json
+  -> MapLibre sample order explanation panel
+```
+
+第一版建议只做展示层，不改调度：
+
+- 生成 `sampled_order_explanations.json`，按固定随机种子或代表性规则抽取 completed / assigned / unserved 订单。
+- 每个样本汇总 `request_id`、`taxi_id`、派单结果、时间戳、pickup/dropoff、pickup_cost、等待时间、订单距离、hot/cold 分数、route availability。
+- 前端提供“样本订单”列表或随机按钮，点击后高亮该订单 route、pickup、dropoff 和关联 taxi。
+- 面板显示订单生命周期：request arrived、assigned、pickup、completed / unserved。
+- 解释重点放在计价相关字段：接驾成本、订单距离、终点热度/冷度、估算收入或 opportunity adjustment。
+- 对 batch mode 先只做样本摘要，不展示全量逐单路径。
+
+边界：
+
+- 这不是订单管理系统，不做创建、编辑、删除、状态修改、全量搜索或运营后台。
+- 样本订单仍来自离线 artifact，不新增后端 API。
+- 不把 route duration 写回 replay outcome。
+- 不改变 C++ replay、MCMF cost、pickup_cost 或完成率。

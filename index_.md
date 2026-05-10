@@ -21,6 +21,8 @@ Go raw CSV preprocess
   -> C++ replay / dispatch / MCMF
   -> k_sweep grouped metrics
   -> Go experiment summary
+  -> static visualization artifacts
+  -> MapLibre local viewer
 ```
 
 当前默认实验口径：
@@ -36,8 +38,9 @@ Go raw CSV preprocess
 
 - 现在继续保留 `simpleTile(grid_cols)` 作为最小实现和兼容 baseline。
 - H3 是更专业的后续候选路线，适合真实地理网格、层级分辨率、邻居查询和供需热区分析。
-- 暂不把真实地图瓦片、OSM 路网、OSRM/GraphHopper/Valhalla 等作为派单实验依赖；这些属于地图展示或真实路由层。当前前端可使用在线 OSM raster 底图作为开发展示参考，但不反向影响 replay / dispatch。
-- 下一步讨论重点是：是否抽象 `CellIndex`，先让 `simpleTile` 实现，再决定是否替换为 H3。
+- 暂不把真实地图瓦片、OSM 路网、OSRM/GraphHopper/Valhalla 等作为派单实验依赖；这些属于地图展示或真实路由层。当前前端可使用在线 OSM raster 底图作为开发展示参考，也已可通过本机 OSRM 把 live replay 展示路径导出为真实道路 polyline，但不反向影响 replay / dispatch。
+- 当前可视化闭环已经完成第一版：tile heat、corner witness、batch activity overlay、live route polyline 都通过静态文件进入 MapLibre。
+- 下一步讨论重点转向抽样订单解释：随机或按代表性抽取少量订单，展示生命周期、路线、热区/冷区和计价相关指标；不做订单管理系统、CRUD 后台或全量订单运营视图。`CellIndex` / H3 暂时保持后续候选升级方向。
 
 ## 模块索引
 
@@ -373,6 +376,12 @@ go run . `
 ### Route Visual Export
 
 展示层真实路网导出器。第一版消费 `replay_live_paths.geojson`，通过本地 OSRM-compatible router 把虚空行走线段映射为真实道路 polyline，输出 `replay_live_routes.geojson`。如果 router 不可用或单段失败，会保留原始虚空 LineString 并标记 `route_status=fallback`。它不重新派单，不改变 replay outcome，不把真实道路 ETA 写进 MCMF cost。
+
+当前本机状态：
+
+- Docker + OSRM `osrm-nyc` 已可在 `127.0.0.1:5000` 提供纽约路由。
+- 1000 单 live 样本已生成 `1998` 条 route feature，`routed=1998`、`fallback=0`。
+- 前端 Replay 面板已能显示 `ROUTE SOURCE routes`，并沿真实道路 polyline 做 taxi 插值。
 
 输出：
 

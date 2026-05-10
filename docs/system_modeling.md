@@ -4,7 +4,7 @@
 
 ## 1. 当前架构边界
 
-项目分成四层：
+项目分成五层：
 
 1. 数据预处理层
    - Go 读取 Kaggle raw CSV。
@@ -34,8 +34,11 @@
 
 5. 静态展示层
    - `tools/geojson_export` 把离线 CSV 产物转成 GeoJSON 文件。
+   - `tools/replay_visual_export` 把 replay CSV 产物转成 live / batch 展示 artifact。
+   - `tools/route_visual_export` 只消费 live path artifact，并通过本地 OSRM-compatible router 生成真实道路 polyline artifact。
    - `web/map_viewer` 通过 Vite 静态文件服务加载 `/data/tile_stats.geojson`，用 MapLibre 渲染 tile 方格。
    - 可选 `tile_corner_witnesses.geojson` 从 normalized `requests.csv` 抽取每个 tile 四角最近 pickup 点，只用于 hover 审计。
+   - live replay 优先加载 `replay_live_routes.geojson`，沿 polyline 累计长度插值 taxi 位置；若 route artifact 不存在或单段失败，则回退到虚空行走线。
    - viewer 可选加载在线 OSM raster 底图作为开发展示参考，但底图不进入 replay、dispatch、MCMF cost 或 CSV schema。
    - 这一层仍然是文件边界，不是后端 API 边界；不触发 replay、dispatch 或 pricing。
 
@@ -56,6 +59,8 @@ Kaggle NYC.csv
   -> replay report / request outcomes
   -> k_sweep hot/cold grouped metrics
   -> tools/geojson_export
+  -> tools/replay_visual_export
+  -> tools/route_visual_export
   -> web/map_viewer static MapLibre view
 ```
 
@@ -65,12 +70,13 @@ Kaggle NYC.csv
 - C++ 处理稳定的调度状态机、候选边、匹配算法和回放指标。
 - 两边通过文件交互，不用 cgo，不传 C++ 对象或 STL 容器。
 - Go 可以继续补充业务估算列，但不同策略下的服务效果以 C++ replay outcome 为事实源。
-- 前端第一阶段只读取静态 GeoJSON 文件，不通过 HTTP API 调用 Go/C++ 工具；浏览器里的 `fetch("/data/tile_stats.geojson")` 只是 Vite 的本地静态文件服务。
+- 前端第一阶段只读取静态 JSON / GeoJSON 文件，不通过 HTTP API 调用 Go/C++ 工具；浏览器里的 `fetch("/data/...")` 只是 Vite 的本地静态文件服务。
 - corner witness 点只解释 tile 中真实 pickup 分布，不裁剪 tile polygon，也不参与候选生成或匹配。
+- route polyline 只解释 live replay 的展示路径，不改变 `pickup_cost`、订单完成时间、候选边或 MCMF 匹配结果。
 
 ## 3. 虚空行走模型
 
-当前阶段不模拟真实道路。
+调度核心仍然使用虚空行走模型。真实道路 polyline 只存在于展示 artifact 中。
 
 规则：
 
@@ -210,7 +216,7 @@ opportunity_adjustment =
 当前阶段不要做：
 
 - 全纽约全量完全二分图。
-- 真实道路最短路。
+- 把真实道路最短路 / ETA 写进 dispatch 主链路。
 - API / Socket / WebSocket 在线服务。
 - 多线程事件处理。
 - Redis 或外部数据库。
@@ -253,6 +259,13 @@ opportunity_adjustment =
 - 路由源：默认本地 OSRM-compatible router，不让浏览器逐段请求在线 routing API。
 - 输出：`replay_live_routes.geojson`，保留 live path 的时间和业务 properties，把 geometry 替换为真实道路 polyline。
 - 失败策略：单段路由失败时保留原始虚空 LineString，并标记 `route_status=fallback`。
+
+当前本机验收状态：
+
+- Docker 容器 `osrm-nyc` 可监听 `127.0.0.1:5000`。
+- 纽约 OSM extract 已完成 `osrm-extract -> osrm-partition -> osrm-customize`。
+- 1000 单 live artifact 已重新生成路线：`1998` 条 feature 全部 `route_status=routed`，`fallback=0`。
+- 前端 Replay 面板可显示 route source、routed/fallback 数量，并沿 route polyline 插值。
 
 边界约束：
 

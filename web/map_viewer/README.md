@@ -107,6 +107,26 @@ default:
 http://127.0.0.1:5000
 ```
 
+Current local validation:
+
+- Docker container: `osrm-nyc`
+- Router URL: `http://127.0.0.1:5000`
+- Sample live paths: `1998`
+- Routed features: `1998`
+- Fallback features: `0`
+
+Start an existing local OSRM container:
+
+```powershell
+docker start osrm-nyc
+```
+
+Stop it when not needed:
+
+```powershell
+docker stop osrm-nyc
+```
+
 Generate route artifacts:
 
 ```powershell
@@ -119,6 +139,9 @@ go run . `
 
 If the router is unavailable, the tool still writes an output file. Each failed
 route keeps the original LineString and gets `route_status=fallback`.
+
+The route artifact is display-only. It does not change replay times, dispatch
+decisions, MCMF cost, pickup cost, completion rate, or request outcomes.
 
 ## Local development
 

@@ -44,7 +44,7 @@ CellIndex
   parent(cell_id, resolution) -> cell_id
 ```
 
-第一步可以让 `simpleTile` 实现这个接口；如果后续确认需要更真实的地理网格，再增加 H3 实现。地图瓦片、真实道路路由、OSM 中间件继续后置，不作为当前 region / heat 统计的前置条件；前端在线 raster 底图只用于视觉对齐参考。
+第一步可以让 `simpleTile` 实现这个接口；如果后续确认需要更真实的地理网格，再增加 H3 实现。地图瓦片、真实道路路由、OSM 中间件可以服务展示层，但不作为当前 region / heat 统计的前置条件；前端在线 raster 底图和 OSRM route polyline 都只用于视觉对齐与 replay 展示，不反向定义 region。
 
 ## 3. 当前结论
 
