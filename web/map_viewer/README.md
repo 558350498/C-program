@@ -7,6 +7,9 @@ MapLibre canvas. It first tries to load `public/data/tile_stats.geojson`; if
 that file does not exist, it falls back to an inline sample GeoJSON layer.
 The map also includes an optional online OpenStreetMap raster basemap for local
 development, with a panel toggle to turn it off.
+The status panel also has separate layer toggles for tile polygons, tile points,
+and corner witnesses, so demos can explain each visual layer without leaving a
+solid rectangle on the map all the time.
 
 The viewer stays a static frontend. It does not call replay, dispatch, pricing,
 Docker, WebSocket, Redis, or a backend API.
@@ -91,6 +94,9 @@ go run . `
 When replay artifacts exist, the viewer loads
 `/data/replay/replay_manifest.json`.
 
+- The Replay panel probes live and batch artifacts independently. If both are
+  present, the viewer can switch between them; if one is missing, that option is
+  disabled rather than treated as a fatal replay error.
 - Batch mode also loads `/data/replay/replay_batches.json` and
   `/data/replay/replay_batch_tiles.json`. It shows a batch tick slider, play
   cursor, current pending requests, available drivers, candidate edges, applied
@@ -104,11 +110,20 @@ When replay artifacts exist, the viewer loads
   instead of `replay_live_paths.geojson` for path drawing and taxi interpolation.
   Missing or failed routes fall back to the original virtual-walk line.
 - When `/data/replay/sampled_order_explanations.json` exists, the Replay panel
-  shows representative orders. Selecting one highlights its route when live
+  exposes an Orders drawer. Selecting one highlights its route when live
   route/path artifacts are available, plus pickup/dropoff points and related
   tiles. The sample file is display-only and does not change dispatch results.
   When generated with `-tile-stats`, each sample also includes an explanatory
   pricing estimate with base fare, price factor, pickup cost, and estimated net.
+  The drawer groups the explanation into Lifecycle, Dispatch, and Pricing.
+
+If you want live and batch available at the same time, keep both file families
+under `public/data/replay`. `tools/replay_visual_export -mode live` and
+`-mode batch` are still single-mode exports, so exporting one mode directly into
+the viewer directory can remove files from the other mode. A safe workflow is to
+export the second mode into a temporary build directory and copy only the needed
+`replay_batches.json` / `replay_batch_tiles.json` files into
+`public/data/replay`.
 
 ## Generate live route GeoJSON
 
@@ -171,6 +186,34 @@ Open:
 ```text
 http://localhost:5173
 ```
+
+## Demo on another machine
+
+The repository can come from GitHub. Demo data is intentionally separate because
+`web/map_viewer/public/data/` and generated replay artifacts are ignored build
+outputs.
+
+Recommended workflow for a notebook:
+
+1. `git pull` the repository.
+2. Put demo artifacts in a separate folder, for example `D:\taxi-demo-artifacts`.
+   The folder can either contain `tile_stats.geojson` plus a `replay\` subfolder,
+   or all replay files directly at the root.
+3. Run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\prepare_map_viewer_demo.ps1 -ArtifactSource D:\taxi-demo-artifacts -Serve
+```
+
+If the notebook already has the artifacts under `web/map_viewer/public/data`,
+run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\prepare_map_viewer_demo.ps1 -Serve
+```
+
+The script does not package source code. It only syncs optional demo artifacts,
+checks missing layers, runs the frontend build, and starts the local viewer.
 
 ## Build
 

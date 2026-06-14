@@ -183,6 +183,9 @@ func TestRunExportWritesSampleOrderExplanations(t *testing.T) {
 	if samples[0].RequestID != "r1" || samples[0].Status != "completed" {
 		t.Fatalf("first sample = %+v, want completed r1", samples[0])
 	}
+	if !hasSampleWithTag(samples, "distance_matched_hot_dropoff") || !hasSampleWithTag(samples, "distance_matched_cold_dropoff") {
+		t.Fatalf("samples do not include distance matched hot/cold pair: %+v", samples)
+	}
 	if !hasSampleWithTag(samples, "unserved") {
 		t.Fatalf("samples do not include unserved tag: %+v", samples)
 	}

@@ -128,6 +128,13 @@ Phase 3.5: tile GeoJSON visualization
 - region 可视化继续后置；等 tile 图层稳定后，再接 `region_stats.csv` 和 `region_map.csv`。
 - 这一阶段仍然不引入后端 API、WebSocket 或真实道路服务；在线 OSM raster 底图只作为前端可关闭的开发展示层。
 
+Phase 3.6: interactive tile explanation viewer
+
+- `web/map_viewer` 已支持 tile 矩形、tile 内点、corner witness 点的独立开关，方便展示时解释“矩形是统计桶，不是道路边界”。
+- 选中抽样订单时，pickup/dropoff 点和相关 tile 会独立高亮，不受普通 tile/point 图层开关影响。
+- Batch replay 的 tile activity overlay 是窗口化事件聚合，不是 region 动态重划，也不是司机实时坐标。
+- 下一步如果要展示 region，应优先作为单独的审计图层接入，避免和现有 tile heat、batch activity、sample order highlight 混成一个含义不清的颜色层。
+
 Phase 4: region stats / flow matrix
 
 - 聚合 pickup/dropoff/free driver/completion/candidate coverage。

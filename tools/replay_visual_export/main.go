@@ -705,6 +705,12 @@ func buildSampleOrderExplanations(requests map[string]requestRow, outcomes []out
 		}
 	}
 
+	if hotOutcome, coldOutcome, ok := distanceMatchedDropoffContrast(eligible, requests, tileStats); ok {
+		add(hotOutcome, "distance_matched_hot_dropoff")
+		add(hotOutcome, "comparison_pair")
+		add(coldOutcome, "distance_matched_cold_dropoff")
+		add(coldOutcome, "comparison_pair")
+	}
 	addFirst("completed", func(outcome outcomeRow) bool { return outcome.Completed })
 	addFirst("assigned_incomplete", func(outcome outcomeRow) bool { return outcome.Assigned && !outcome.Completed })
 	addFirst("unserved", func(outcome outcomeRow) bool { return !outcome.Assigned })
@@ -749,6 +755,82 @@ func buildSampleOrderExplanations(requests map[string]requestRow, outcomes []out
 		samples = append(samples, sampleExplanation(req, outcome, reasons[outcome.RequestID], tileStats, pricing))
 	}
 	return samples
+}
+
+func distanceMatchedDropoffContrast(outcomes []outcomeRow, requests map[string]requestRow, tileStats map[string]tileStatsRow) (outcomeRow, outcomeRow, bool) {
+	if len(tileStats) == 0 {
+		return outcomeRow{}, outcomeRow{}, false
+	}
+
+	type candidate struct {
+		outcome outcomeRow
+		req     requestRow
+		dist    float64
+		hot     float64
+	}
+
+	candidates := make([]candidate, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if !outcome.Assigned || !outcome.HasCandidateEdge {
+			continue
+		}
+		req, ok := requests[outcome.RequestID]
+		if !ok {
+			continue
+		}
+		stats, ok := tileStats[req.DropoffTile]
+		if !ok {
+			continue
+		}
+		dist := tripDistance(req)
+		if dist <= 0 || math.IsNaN(dist) || math.IsInf(dist, 0) {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			outcome: outcome,
+			req:     req,
+			dist:    dist,
+			hot:     stats.HotspotScore,
+		})
+	}
+
+	bestScore := math.Inf(-1)
+	bestLeft := -1
+	bestRight := -1
+	for i := 0; i < len(candidates); i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			left := candidates[i]
+			right := candidates[j]
+			hotDiff := math.Abs(left.hot - right.hot)
+			if hotDiff < 0.35 {
+				continue
+			}
+			avgDist := (left.dist + right.dist) / 2
+			relativeDistDiff := math.Abs(left.dist-right.dist) / avgDist
+			if relativeDistDiff > 0.20 {
+				continue
+			}
+			score := hotDiff - relativeDistDiff
+			if left.outcome.Completed && right.outcome.Completed {
+				score += 0.05
+			}
+			if score > bestScore {
+				bestScore = score
+				bestLeft = i
+				bestRight = j
+			}
+		}
+	}
+	if bestLeft < 0 || bestRight < 0 {
+		return outcomeRow{}, outcomeRow{}, false
+	}
+
+	left := candidates[bestLeft]
+	right := candidates[bestRight]
+	if left.hot >= right.hot {
+		return left.outcome, right.outcome, true
+	}
+	return right.outcome, left.outcome, true
 }
 
 func sampleExplanation(req requestRow, outcome outcomeRow, reasons []string, tileStats map[string]tileStatsRow, pricing pricingParams) sampleOrderExplanation {

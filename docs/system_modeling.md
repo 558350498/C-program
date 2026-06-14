@@ -1,6 +1,6 @@
 # 出租车调度系统建模笔记
 
-这份文档只记录稳定设计边界和建模原则。函数位置看 `index_.md`，事件推进看 `docs/timeline_model.md`，当前任务看 `plan/dispatch_next_steps.md`。
+这份文档只记录稳定设计边界和建模原则。函数位置看 `INDEX.md`，事件推进看 `docs/timeline_model.md`，当前任务看 `plan/dispatch_next_steps.md`。
 
 ## 1. 当前架构边界
 
@@ -275,3 +275,25 @@ opportunity_adjustment =
 - 前端只把 `replay_live_routes.geojson` 当作更真实的绘制路径；时间仍以 replay artifact 的 `start_time` / `end_time` 为准。
 
 真实道路 ETA 接入 dispatch 是后续独立阶段，需要候选粗筛、路由缓存、性能预算和指标对照，不能和展示层路线混做。
+
+## 10. Map viewer explanation boundary
+
+2026-05-10 状态：`web/map_viewer` 已经从最小地图 MVP 升级为静态解释 viewer，但边界仍然保持清楚。
+
+当前 viewer 可以做：
+
+- 独立开关 tile 矩形、tile 内点和 corner witness 点。
+- 在可用 artifact 间切换 live replay 和 batch replay。
+- 在 live 模式下优先使用 `replay_live_routes.geojson`，缺失时回退到 `replay_live_paths.geojson`。
+- 在 batch 模式下用 `replay_batches.json` 展示时间线，用 `replay_batch_tiles.json` 展示窗口化 tile activity。
+- 用 `sampled_order_explanations.json` 在 Orders 抽屉中解释少量代表性订单，并展示生命周期、派单结果、hot/cold 指标和 pricing v1 分解。
+
+当前 viewer 不能做，也不应该假装做：
+
+- 不重新运行 replay。
+- 不写回 `request_outcomes.csv`、`batch_logs.csv` 或 manifest。
+- 不改变候选边、MCMF cost、接驾成本、完成率或派单结果。
+- 不提供订单 CRUD、全量订单搜索、后台管理或在线实时流。
+- 不把 OSRM polyline、OSM raster basemap 或前端高亮结果反向定义为调度事实。
+
+因此，展示层可以被讲成“解释 replay 事实的仪表盘”，不是新的调度系统本体。

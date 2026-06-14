@@ -259,6 +259,10 @@ async function loadReplayBatches(): Promise<ReplayBatch[]> {
   if (response.status === 404) {
     return [];
   }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return [];
+  }
   if (!response.ok) {
     throw new Error(`replay_batches.json returned ${response.status}`);
   }
@@ -317,6 +321,10 @@ async function loadReplayBatchTiles(): Promise<ReplayBatchTileFrame[] | null> {
   if (response.status === 404) {
     return null;
   }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
   if (!response.ok) {
     throw new Error(`replay_batch_tiles.json returned ${response.status}`);
   }
@@ -364,7 +372,32 @@ async function loadSampleOrders(): Promise<SampleOrderExplanation[] | null> {
 function describeFeature(feature: maplibregl.MapGeoJSONFeature): HoverInfo {
   const properties = feature.properties ?? {};
   const tileId = properties.tile_id;
+  if (properties.corner !== undefined || properties.request_id !== undefined) {
+    return {
+      title: `Pickup point ${properties.request_id ?? ""}`.trim(),
+      details: [
+        `tile ${tileId ?? "n/a"}`,
+        properties.corner ? `witness ${properties.corner}` : null,
+        properties.request_time !== undefined ? `request ${formatTime(Number(properties.request_time))}` : null,
+        properties.distance_to_corner !== undefined ? `corner dist ${Number(properties.distance_to_corner).toFixed(4)}` : null
+      ]
+        .filter(Boolean)
+        .join(" | ")
+    };
+  }
   if (tileId !== undefined) {
+    if (properties.activity_score !== undefined || properties.batch_time !== undefined) {
+      return {
+        title: `Tile ${tileId} activity`,
+        details: [
+          `time ${formatTime(Number(properties.batch_time ?? 0))}`,
+          `window pickup ${properties.pickup_count ?? 0}`,
+          `assigned ${properties.assigned_count ?? 0}`,
+          `done ${properties.completed_count ?? 0}`,
+          `score ${properties.activity_score ?? 0}`
+        ].join(" | ")
+      };
+    }
     return {
       title: `Tile ${tileId}`,
       details: [
@@ -678,8 +711,11 @@ function orderStatusText(mode: SampleOrdersMode, count: number, selectedSample: 
   if (mode === "loading") {
     return "loading";
   }
+  if (count === 0) {
+    return "0 samples";
+  }
   if (!selectedSample) {
-    return `${count} samples`;
+    return `${count} samples · select`;
   }
   return `${count} samples · ${selectedSample.status}`;
 }
@@ -864,11 +900,20 @@ function App() {
     details: "Hover a tile"
   });
 
+  const replayBatchTilesByTime = useMemo(() => {
+    const frames = new globalThis.Map<number, ReplayBatchTileFrame>();
+    for (const frame of replayBatchTiles) {
+      frames.set(frame.batch_time, frame);
+    }
+    return frames;
+  }, [replayBatchTiles]);
+
   const selectedBatch = replayBatches[replayCursor] ?? null;
-  const selectedBatchTiles = replayBatchTiles[replayCursor] ?? null;
+  const selectedBatchTiles = selectedBatch
+    ? replayBatchTilesByTime.get(selectedBatch.batch_time) ?? replayBatchTiles[replayCursor] ?? null
+    : null;
   const selectedActivityTotals = selectedBatchTiles?.totals ?? emptyReplayTotals;
-  const selectedSample =
-    sampleOrders.find((sample) => sample.request_id === selectedSampleRequestId) ?? sampleOrders[0] ?? null;
+  const selectedSample = sampleOrders.find((sample) => sample.request_id === selectedSampleRequestId) ?? null;
   const replayProgress = useMemo(() => {
     if (replayBatches.length <= 1) {
       return 0;
@@ -1161,19 +1206,14 @@ function App() {
       map.addLayer({
         id: dispatchPointLayerId,
         type: "circle",
-        source: dispatchSourceId,
-        filter: ["==", ["geometry-type"], "Point"],
+        source: witnessSourceId,
         paint: {
-          "circle-color": [
-            "match",
-            ["get", "kind"],
-            "point",
-            "#d1495b",
-            "#d1495b"
-          ],
-          "circle-radius": 7,
+          "circle-color": "#415a77",
+          "circle-opacity": 0.42,
+          "circle-radius": 3.8,
           "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 2
+          "circle-stroke-opacity": 0.7,
+          "circle-stroke-width": 1
         }
       });
 
@@ -1260,6 +1300,13 @@ function App() {
         }
       });
 
+      map.on("mousemove", replayActivityFillLayerId, (event) => {
+        const feature = event.features?.[0];
+        if (feature) {
+          showTileWitnesses(feature);
+        }
+      });
+
       map.on("mousemove", dispatchPointLayerId, (event) => {
         const feature = event.features?.[0];
         if (feature) {
@@ -1268,6 +1315,7 @@ function App() {
       });
 
       map.on("mouseleave", dispatchFillLayerId, hideTileWitnesses);
+      map.on("mouseleave", replayActivityFillLayerId, hideTileWitnesses);
       map.on("mouseleave", dispatchPointLayerId, () => {
         setHoverInfo({
           title: "No feature selected",
@@ -1307,6 +1355,10 @@ function App() {
     setVisibility(selectedTileLayerId, tilesEnabled);
     setVisibility(dispatchPointLayerId, tilePointsEnabled);
     setVisibility(witnessLayerId, witnessesEnabled);
+    if (!witnessesEnabled && map?.getLayer(witnessLayerId)) {
+      map.setFilter(witnessLayerId, ["==", ["get", "tile_id"], -1]);
+      setWitnessCount(0);
+    }
   }, [mapReady, replayMode, tilePointsEnabled, tilesEnabled, witnessesEnabled]);
 
   useEffect(() => {
@@ -1322,16 +1374,20 @@ function App() {
         if (!samples) {
           setSampleOrdersMode("missing");
           setSampleOrders([]);
+          setSelectedSampleRequestId(null);
           return;
         }
         setSampleOrders(samples);
-        setSelectedSampleRequestId((current) => current ?? samples[0]?.request_id ?? null);
+        setSelectedSampleRequestId((current) =>
+          current && samples.some((sample) => sample.request_id === current) ? current : null
+        );
         setSampleOrdersMode("geojson");
       } catch (error) {
         console.warn("Sample order explanations are unavailable.", error);
         if (!cancelled) {
           setSampleOrdersMode("error");
           setSampleOrders([]);
+          setSelectedSampleRequestId(null);
         }
       }
     }
@@ -1600,7 +1656,7 @@ function App() {
             <dt>Witness</dt>
             <dd>
               <span>{witnessMode}</span>
-              <small>{witnessCount} shown for hovered tile</small>
+              <small>{witnessesEnabled ? `${witnessCount} shown for hovered tile` : "disabled"}</small>
             </dd>
           </div>
           <div>
@@ -1833,15 +1889,20 @@ function App() {
 
         {ordersOpen ? (
           <div className="orders-drawer">
-            {selectedSample ? (
+            {sampleOrders.length > 0 ? (
               <>
                 <div className="sample-list" role="list" aria-label="Sample orders">
                   {sampleOrders.map((sample) => (
                     <button
                       key={sample.request_id}
                       type="button"
-                      className={`sample-order ${sample.request_id === selectedSample.request_id ? "sample-order-active" : ""}`}
-                      onClick={() => setSelectedSampleRequestId(sample.request_id)}
+                      aria-pressed={sample.request_id === selectedSample?.request_id}
+                      className={`sample-order ${sample.request_id === selectedSample?.request_id ? "sample-order-active" : ""}`}
+                      onClick={() =>
+                        setSelectedSampleRequestId((current) =>
+                          current === sample.request_id ? null : sample.request_id
+                        )
+                      }
                     >
                       <span>{sample.request_id}</span>
                       <small>{sample.status}</small>
@@ -1853,7 +1914,8 @@ function App() {
                   ))}
                 </div>
 
-                <div className="order-explain-grid">
+                {selectedSample ? (
+                  <div className="order-explain-grid">
                   <section className="explain-section">
                     <h3>Lifecycle</h3>
                     <dl className="batch-metrics sample-metrics">
@@ -1987,7 +2049,10 @@ function App() {
                       </div>
                     </dl>
                   </section>
-                </div>
+                  </div>
+                ) : (
+                  <p className="panel-note">Select an order to show route highlight and explanation. Select it again to hide.</p>
+                )}
               </>
             ) : (
               <p className="panel-note">
