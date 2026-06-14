@@ -4,13 +4,42 @@
 *.dll
 *.dylib
 *.so
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.log
 .vscode/
+.idea/
 .DS_Store
+Thumbs.db
+desktop.ini
 *.docx
+*.pdf
+*.zip
+~$*
+*.tmp
+*.temp
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 web/map_viewer/dist/
+web/map_viewer/.vite/
 web/map_viewer/public/data/*.geojson
 web/map_viewer/public/data/replay/
+web/map_viewer/public/data/*.json
+web/map_viewer/public/data/*.csv
+
+# Python / Go / JS local caches.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+coverage.out
+*.test
 
 # Project-private notes / local documents.
 debug_analysis.md
@@ -20,15 +49,22 @@ compile_flags.txt
 
 # Build outputs.
 build/
+build-*/
 build-cmake/
+build-codex-check/
 build-local/
 build-mingw/
 CMakeFiles/
 CMakeCache.txt
 Testing/
 cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
 build_*.exe
 compat_*.exe
+pulled_baseline.exe
+taxi_pull_baseline.exe
+taxi_test_build.exe
 
 # Local datasets and generated normalized data.
 data/datasets/**
