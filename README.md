@@ -29,9 +29,7 @@ Kaggle CSV
 
 ## Windows Run Note
 
-建议把 GitHub zip 解压到纯英文路径后再构建运行，例如放到
-C:\Users\33625\Desktop\c_program\a24251102230。MinGW Makefiles 在包含中文或
-特殊字符的目录下可能报 `Illegal byte sequence`。
+建议把 GitHub zip 解压到纯英文路径后再构建运行
 
 ## Verification
 
