@@ -1,113 +1,75 @@
-# Agent Entry
+# Agent Context Map
 
-This repo is an offline taxi dispatch replay lab. Treat it as a reproducible
-algorithm and evidence project, not as an online ride-hailing service.
+Use this file as a table of contents, not as the project encyclopedia. Load the
+smallest deeper document that matches the task.
 
-## Read Order
+## Always Load
 
-Start with these files before changing code:
-
-1. `README.md`: project kernel, hard boundaries, and navigation.
-2. `PROJECT_STATUS.md`: current truth, risks, and latest verified evidence.
-3. `INDEX.md`: fast file/module map.
-4. `docs/README.md`: stable design-doc map.
-5. `docs/glossary.md`: cost, pricing, dispatch, and spatial terms.
-6. `plan/README.md`: durable plan registry.
-7. `plan/dispatch_next_steps.md`: current executable slices.
-
-Use `docs/system_modeling.md`, `docs/timeline_model.md`,
-`docs/algorithm_and_strategy.md`, and `docs/region_design.md` when the task
-touches architecture, replay timing, dispatch cost, pricing, or spatial cells.
-
-## Repo Layout
-
-| Path | Role |
+| Need | Source |
 |---|---|
-| `include/`, `src/` | C++ replay, candidate generation, dispatch, MCMF, and domain logic |
-| `tests/` | C++ unit and integration tests |
-| `tools/go_csv_preprocess/` | Raw taxi CSV to normalized replay inputs |
-| `tools/go_batch_experiments/` | Batch experiment orchestration |
-| `tools/go_experiment_summary/` | Experiment result summaries |
-| `tools/geojson_export/` | Map-ready GeoJSON export |
-| `tools/replay_visual_export/` | Replay artifacts for the viewer |
-| `tools/route_visual_export/` | OSRM-compatible route and route-cost CSV export |
-| `web/map_viewer/` | Static React/MapLibre explanation surface |
-| `scripts/` | Reproducible project checks and report/evidence workflows |
-| `docs/` | Stable architecture and domain documentation |
-| `plan/` | Current and durable execution plans |
-| `build-local/`, `build-*` | Generated local artifacts; do not commit |
+| Project kernel | `README.md` |
+| Architecture sketch | `ARCHITECTURE.md` |
+| Full documentation map | `docs/index.md` |
+| Current state | `docs/exec-plans/active/project-status.md` |
 
-## Common Commands
+## Task Routing
 
-Run the pre-submit gate:
+| If the task is about... | Load... |
+|---|---|
+| Terminology, cost names, pricing words | `docs/design-docs/glossary.md` |
+| System layers, data flow, viewer boundary | `docs/design-docs/system-modeling.md` |
+| Replay event order, request lifecycle, timing | `docs/design-docs/timeline-model.md` |
+| Candidate edges, MCMF, matching, Pricing v1 | `docs/design-docs/algorithm-and-strategy.md` |
+| Tile stats, CellIndex, region map, H3-like work | `docs/design-docs/region-and-cell-design.md` |
+| Active implementation slices | `docs/exec-plans/active/dispatch-next-steps.md` |
+| Current risks, latest smoke evidence | `docs/exec-plans/active/project-status.md` |
+| Historical or completed plan records | `docs/exec-plans/completed/` |
+| External references or long copied notes | `docs/references/` |
+| Issue tracker workflow | `docs/agents/issue-tracker.md` |
+| Triage label mapping | `docs/agents/triage-labels.md` |
+| Agent/domain doc policy | `docs/agents/domain.md` |
+| Viewer usage and artifact contract | `web/map_viewer/README.md` |
+| Data folders | `data/datasets/nyc-taxi-trip-duration/README.md`, `data/normalized/README.md` |
+| Tool-specific usage | The `README.md` in that tool directory |
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\pre_submit_check.ps1
-```
+## Code Routing
 
-Run only progressive-disclosure and path checks:
+| If touching... | Start at... |
+|---|---|
+| C++ replay and dispatch core | `include/`, `src/`, `tests/` |
+| Candidate generation | `include/dispatch_batch.h`, `src/dispatch_replay.cpp` |
+| MCMF | `include/mcmf_batch_strategy.h`, `src/mcmf_batch_strategy.cpp` |
+| CellIndex | `include/cell_index.h`, `src/cell_index.cpp`, `tests/cell_index_test.cpp` |
+| Tile stats | `include/tile_grid_stats.h`, `src/tile_grid_stats.cpp` |
+| Region map | `include/tile_region_map.h`, `src/tile_region_map.cpp` |
+| Replay CSV IO | `include/dispatch_replay_io.h`, `src/dispatch_replay_io.cpp` |
+| Go preprocessing/export tools | `tools/` |
+| Map viewer | `web/map_viewer/` |
+| Verification scripts | `scripts/` |
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\project_doctor.ps1
-```
+## Verification Routing
 
-Build and test manually:
+| Need | Command |
+|---|---|
+| Docs/path check | `powershell -ExecutionPolicy Bypass -File scripts\project_doctor.ps1` |
+| Architecture lint only | `powershell -ExecutionPolicy Bypass -File scripts\architecture_lint.ps1` |
+| Homework handoff gate | `powershell -ExecutionPolicy Bypass -File scripts\pre_submit_check.ps1` |
+| Report scenario evidence | `powershell -ExecutionPolicy Bypass -File scripts\run_report_scenarios.ps1` |
+| Cost parameter sweep | `powershell -ExecutionPolicy Bypass -File scripts\run_cost_grid_search.ps1` |
 
-```powershell
-cmake -S . -B build-local -G "MinGW Makefiles"
-cmake --build build-local
-ctest --test-dir build-local --output-on-failure
-```
+## Default Rules
 
-Generate the no-router report evidence packet:
+- Prefer loading one routed document before reading broad file sets.
+- Keep generated files out of docs and source control.
+- Put stable terms in `docs/design-docs/glossary.md`.
+- Put current execution state in `docs/exec-plans/active/`.
+- Put durable architecture boundaries in `docs/design-docs/`.
+- Run `scripts/project_doctor.ps1` after changing docs or paths.
+- Keep layer boundaries enforceable through `scripts/architecture_lint.ps1`.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_report_scenarios.ps1 -BuildDir build-local -OutputDir build-local\report-scenarios -EndTime 120 -Radius 0.03 -K 1
-```
+## Do Not Load By Default
 
-## Engineering Boundaries
-
-- C++ replay is the source of truth for request lifecycle, completion, wait
-  time, `pickup_cost`, and per-request outcomes.
-- Go tools may preprocess data, orchestrate experiments, summarize results,
-  and export static artifacts.
-- The viewer reads static artifacts only. It must not dispatch orders, call
-  replay, or write request state.
-- OSRM/OSM routes are display or offline side-table evidence by default.
-  They can affect matching only through an explicit route-cost CSV feeding
-  `dispatch_cost`; they must not rewrite `pickup_cost`.
-- Pricing v1 is explanatory/reporting by default. It may affect matching only
-  through explicit cost-scale options.
-- `simpleTile(grid_cols)` is the baseline spatial bucket. `CellIndex` is the
-  abstraction boundary for multi-resolution or H3-like future work.
-- Keep generated outputs under `build-local/` or other ignored build dirs.
-
-## Done Criteria
-
-For non-trivial code or docs work, finish with evidence:
-
-- The relevant tests or scripts ran, or the reason they could not run is stated.
-- `scripts/project_doctor.ps1` passes when entry docs or paths changed.
-- `scripts/pre_submit_check.ps1` passes before packaging or homework handoff,
-  unless a heavier check was intentionally skipped and documented.
-- Updated docs preserve the progressive-disclosure split: README for kernel,
-  PROJECT_STATUS for current truth, INDEX for navigation, docs for stable
-  decisions, and plan for executable slices.
-- Cost terminology matches `docs/glossary.md`.
-
-## Do Not
-
-- Do not put live routing HTTP calls inside the replay loop.
-- Do not put real-road ETA into `pickup_cost`.
-- Do not let front-end artifacts define replay or dispatch facts.
-- Do not replace the replay path with H3 directly; add adapters behind
-  `CellIndex` only after the seam is proven.
-- Do not commit generated build outputs, CSV evidence packets, PDFs, zips, or
-  local viewer data.
-
-## Issue Tracker Notes
-
-Issues and PRDs for this repo are tracked in GitHub Issues for
-`558350498/C-program`. See `docs/agents/issue-tracker.md`,
-`docs/agents/triage-labels.md`, and `docs/agents/domain.md` when using the
-issue-tracker workflow.
+- Generated outputs under `build-local/` or `build-*`.
+- Local datasets under `data/datasets/**`.
+- Viewer generated data under `web/map_viewer/public/data/`.
+- Old presentation drafts, reports, PDFs, zips, and local homework files.

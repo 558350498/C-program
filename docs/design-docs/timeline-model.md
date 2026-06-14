@@ -1,7 +1,7 @@
 # Timeline Model
 
 This document defines the replay event contract. Cost terminology is defined in
-`docs/glossary.md`; module locations are listed in `INDEX.md`.
+`glossary.md`; module locations are listed in `../index.md`.
 
 ## Events
 

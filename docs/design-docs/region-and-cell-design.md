@@ -1,7 +1,7 @@
 # Region And Cell Design
 
 This document defines the spatial-statistics boundary. Dispatch and cost terms
-are defined in `docs/glossary.md`.
+are defined in `glossary.md`.
 
 ## Spatial Layers
 

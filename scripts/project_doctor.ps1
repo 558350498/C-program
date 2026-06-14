@@ -45,9 +45,9 @@ function Resolve-DocTokenPath([string]$Token, [string]$SourceFile) {
   }
 
   $knownTopLevel = @(
-    "data", "docs", "include", "plan", "scripts", "src", "tests", "tools", "web",
-    "README.md", "PROJECT_STATUS.md", "INDEX.md", "AGENTS.md", "CMakeLists.txt",
-    "main.cpp", "Dockerfile"
+    "data", "docs", "include", "scripts", "src", "tests", "tools", "web",
+    "README.md", "ARCHITECTURE.md", "AGENTS.md", "CMakeLists.txt", "main.cpp",
+    "Dockerfile"
   )
 
   $normalized = $firstWord.Replace("/", "\")
@@ -80,7 +80,7 @@ function Resolve-DocTokenPath([string]$Token, [string]$SourceFile) {
 function Test-DocInlinePaths([string]$SourceFile) {
   $fullPath = Join-Path $repoRoot $SourceFile
   $content = Get-Content -Raw -LiteralPath $fullPath
-  $matches = [regex]::Matches($content, '`([^`]+)`')
+  $matches = [regex]::Matches($content, '(?<!`)`([^`\r\n]+)`(?!`)')
   foreach ($match in $matches) {
     $candidate = Resolve-DocTokenPath $match.Groups[1].Value $SourceFile
     if ($null -eq $candidate) {
@@ -100,48 +100,62 @@ function Test-DocInlinePaths([string]$SourceFile) {
 $requiredPaths = @(
   "README.md",
   "AGENTS.md",
-  "PROJECT_STATUS.md",
-  "INDEX.md",
+  "ARCHITECTURE.md",
   "docs\README.md",
-  "plan\README.md",
-  "plan\dispatch_next_steps.md",
+  "docs\index.md",
+  "docs\design-docs\index.md",
+  "docs\exec-plans\index.md",
+  "docs\exec-plans\active\project-status.md",
+  "docs\exec-plans\active\dispatch-next-steps.md",
+  "docs\exec-plans\completed\index.md",
+  "docs\references\index.md",
+  "scripts\architecture_lint.ps1",
   "scripts\run_report_scenarios.ps1",
   "scripts\run_cost_grid_search.ps1",
   "scripts\pre_submit_check.ps1",
-  "docs\glossary.md"
+  "docs\design-docs\glossary.md"
 )
 foreach ($path in $requiredPaths) {
   Test-RepoPath $path
 }
 
 $stableDocs = @(
-  "docs\system_modeling.md",
-  "docs\timeline_model.md",
-  "docs\glossary.md",
-  "docs\algorithm_and_strategy.md",
-  "docs\region_design.md"
+  "docs\design-docs\system-modeling.md",
+  "docs\design-docs\timeline-model.md",
+  "docs\design-docs\glossary.md",
+  "docs\design-docs\algorithm-and-strategy.md",
+  "docs\design-docs\region-and-cell-design.md"
 )
 foreach ($path in $stableDocs) {
   Test-RepoPath $path
 }
 
-$planLines = (Get-Content -LiteralPath (Join-Path $repoRoot "plan\dispatch_next_steps.md")).Count
+$planLines = (Get-Content -LiteralPath (Join-Path $repoRoot "docs\exec-plans\active\dispatch-next-steps.md")).Count
 if ($planLines -gt $MaxPlanLines) {
-  Add-Failure "plan/dispatch_next_steps.md is over $MaxPlanLines lines: $planLines"
+  Add-Failure "docs/exec-plans/active/dispatch-next-steps.md is over $MaxPlanLines lines: $planLines"
 }
 
 $entryDocs = @(
   "README.md",
   "AGENTS.md",
-  "PROJECT_STATUS.md",
-  "INDEX.md",
+  "ARCHITECTURE.md",
   "docs\README.md",
-  "docs\glossary.md",
-  "plan\README.md",
-  "plan\dispatch_next_steps.md"
+  "docs\index.md",
+  "docs\design-docs\index.md",
+  "docs\design-docs\glossary.md",
+  "docs\exec-plans\index.md",
+  "docs\exec-plans\active\project-status.md",
+  "docs\exec-plans\active\dispatch-next-steps.md",
+  "docs\references\index.md"
 )
 foreach ($doc in $entryDocs) {
   Test-DocInlinePaths $doc
+}
+
+$architectureLint = Join-Path $repoRoot "scripts\architecture_lint.ps1"
+& powershell -ExecutionPolicy Bypass -File $architectureLint
+if ($LASTEXITCODE -ne 0) {
+  Add-Failure "architecture lint failed"
 }
 
 if ($failures.Count -gt 0) {

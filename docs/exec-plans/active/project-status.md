@@ -38,8 +38,8 @@ compatibility layer.
 
 | Risk | Current handling |
 |---|---|
-| Entry docs drift | `scripts/project_doctor.ps1` checks required docs, legacy shim shape, line budgets, and inline paths |
-| Cost semantics blur | `docs/glossary.md` defines pricing, `pickup_cost`, `dispatch_cost`, route cost, and opportunity cost |
+| Entry docs drift | `scripts/project_doctor.ps1` checks required docs, line budgets, and inline paths |
+| Cost semantics blur | `docs/design-docs/glossary.md` defines pricing, `pickup_cost`, `dispatch_cost`, route cost, and opportunity cost |
 | Rectangular tile overfitting | `CellIndex` isolates the current tile baseline behind an adapter seam |
 | Route/display facts leaking into dispatch facts | Route evidence affects matching only through explicit route-cost CSV side tables |
 | Hand-tuned opportunity parameters | `scripts/run_cost_grid_search.ps1` produces ranked smoke evidence |
@@ -88,10 +88,11 @@ region map a hard dispatch boundary.
 | Detail | File |
 |---|---|
 | Agent entry and done criteria | `AGENTS.md` |
-| Fast path/module navigation | `INDEX.md` |
-| Stable design docs | `docs/README.md` |
-| Cost and dispatch terms | `docs/glossary.md` |
-| Current executable slices | `plan/dispatch_next_steps.md` |
+| Architecture overview | `ARCHITECTURE.md` |
+| Fast path/module navigation | `docs/index.md` |
+| Stable design docs | `docs/design-docs/index.md` |
+| Cost and dispatch terms | `docs/design-docs/glossary.md` |
+| Current executable slices | `docs/exec-plans/active/dispatch-next-steps.md` |
 | Report evidence workflow | `scripts/run_report_scenarios.ps1` |
 | Cost parameter workflow | `scripts/run_cost_grid_search.ps1` |
 | Pre-submit gate | `scripts/pre_submit_check.ps1` |

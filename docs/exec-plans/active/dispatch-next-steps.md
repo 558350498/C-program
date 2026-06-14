@@ -1,6 +1,7 @@
 # Dispatch Next Steps
 
-This file records the current executable plan only. For broad project state, read `../PROJECT_STATUS.md`; for module navigation, read `../INDEX.md`.
+This file records the current executable plan only. For broad project state,
+read `project-status.md`; for module navigation, read `../../index.md`.
 
 ## Current Health Summary
 
@@ -146,11 +147,11 @@ scripts/project_doctor.ps1
 
 Current checks:
 
-- `README.md`, `PROJECT_STATUS.md`, `INDEX.md`, `docs/README.md`, and `plan/README.md` exist.
+- `README.md`, `AGENTS.md`, `ARCHITECTURE.md`, `docs/index.md`, `docs/design-docs/index.md`, and `docs/exec-plans/index.md` exist.
 - Paths listed in the main navigation tables exist.
-- `index_.md` remains only a legacy shim.
-- `docs/README.md` points to stable docs only.
-- `plan/dispatch_next_steps.md` stays under the configured line budget.
+- Removed legacy root shim docs from the first-pass path.
+- `docs/design-docs/index.md` points to stable docs only.
+- `docs/exec-plans/active/dispatch-next-steps.md` stays under the configured line budget.
 
 This mirrors the useful part of the novel project approach: make entry drift machine-visible before it becomes architecture debt.
 

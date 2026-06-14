@@ -1,7 +1,8 @@
 # Algorithm And Strategy
 
 This document records stable non-ML dispatch and pricing rules. Current smoke
-numbers belong in `PROJECT_STATUS.md`; terms belong in `docs/glossary.md`.
+numbers belong in `../exec-plans/active/project-status.md`; terms belong in
+`glossary.md`.
 
 ## Candidate Strategy
 

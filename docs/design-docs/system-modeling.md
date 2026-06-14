@@ -1,8 +1,8 @@
 # System Modeling
 
 This document keeps the stable architecture boundaries. File/module lookup
-lives in `INDEX.md`; current status lives in `PROJECT_STATUS.md`; terminology
-lives in `docs/glossary.md`.
+lives in `../index.md`; current status lives in
+`../exec-plans/active/project-status.md`; terminology lives in `glossary.md`.
 
 ## Layer Boundaries
 
@@ -46,7 +46,7 @@ pending requests. The default path is still `scan + finite k`; indexed paths are
 comparison and future optimization paths.
 
 MCMF optimizes `dispatch_cost`. Replay timing applies `pickup_cost`. See
-`docs/glossary.md` for the cost split.
+`glossary.md` for the cost split.
 
 Do not silently add:
 

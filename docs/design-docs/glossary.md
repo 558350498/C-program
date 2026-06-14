@@ -13,7 +13,7 @@ across code, docs, reports, and agent handoffs.
 | `applied_pickup_cost` | Sum of selected assignment `pickup_cost` values after replay applies assignments. It remains tied to replay timing. | `src/dispatch_replay.cpp` |
 | Route cost | Offline road-network duration/distance from route-cost CSV. It can become a `dispatch_cost` side table when `--route-cost-csv` is provided. | `tools/route_visual_export/`, `src/dispatch_replay_io.cpp` |
 | Opportunity cost | Hot/cold-zone adjustment that nudges matching away from worse future-positioning outcomes. In the current model it is a rule-based adjustment, not a learned future supply-demand forecast. | `include/dispatch_batch.h`, `scripts/run_cost_grid_search.ps1` |
-| Pricing v1 | Explanatory fare/revenue estimate for reports and sample orders. It does not affect matching unless an explicit dispatch-cost option is enabled. | `docs/algorithm_and_strategy.md` |
+| Pricing v1 | Explanatory fare/revenue estimate for reports and sample orders. It does not affect matching unless an explicit dispatch-cost option is enabled. | `algorithm-and-strategy.md` |
 
 ## Spatial Terms
 
@@ -24,7 +24,7 @@ across code, docs, reports, and agent handoffs.
 | `SimpleTileCellIndex` | First `CellIndex` adapter that wraps existing rectangular tile semantics. | `src/cell_index.cpp` |
 | Neighbor smoothing | Optional hotspot-score smoothing over nearby cells. It affects opportunity adjustment, not coordinates or replay timing. | `include/tile_grid_stats.h` |
 | Parent fallback | Optional coarse-cell fallback for sparse cells. It affects opportunity adjustment, not candidate geometry or replay timing. | `include/tile_grid_stats.h` |
-| H3-like adapter | Future multi-resolution cell implementation candidate. It is not the current dependency and should not replace replay directly. | `docs/region_design.md` |
+| H3-like adapter | Future multi-resolution cell implementation candidate. It is not the current dependency and should not replace replay directly. | `region-and-cell-design.md` |
 
 ## Boundary Rules
 

@@ -7,15 +7,15 @@ domain context in the files below.
 
 1. `AGENTS.md`
 2. `README.md`
-3. `PROJECT_STATUS.md`
-4. `INDEX.md`
-5. `docs/README.md`
-6. `docs/glossary.md`
+3. `ARCHITECTURE.md`
+4. `docs/index.md`
+5. `docs/exec-plans/active/project-status.md`
+6. `docs/design-docs/glossary.md`
 7. The specific design document for the area being changed
 
 ## Vocabulary
 
-Use `docs/glossary.md` for dispatch, pricing, cost, route, and spatial terms.
+Use `docs/design-docs/glossary.md` for dispatch, pricing, cost, route, and spatial terms.
 If a term is missing, add it there before spreading a new name through issues,
 plans, or code comments.
 
