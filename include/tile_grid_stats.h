@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cell_index.h"
 #include "dispatch_batch.h"
 
 #include <cstddef>
@@ -28,6 +29,15 @@ struct RequestTileFeatures {
   RequestTileFeatures(double pickup_hotspot_score_value,
                       double dropoff_hotspot_score_value,
                       double cold_dropoff_score_value);
+};
+
+struct CellSmoothingOptions {
+  int neighbor_rings;
+  double neighbor_weight;
+  int parent_grid_cols;
+  double parent_weight;
+
+  CellSmoothingOptions();
 };
 
 class TileGridStats {
@@ -60,5 +70,18 @@ private:
 TileGridStats
 build_tile_grid_stats(const std::vector<PassengerRequest> &requests,
                       const std::vector<DriverSnapshot> &drivers);
+
+TileGridStats
+build_cell_grid_stats(const std::vector<PassengerRequest> &requests,
+                      const std::vector<DriverSnapshot> &drivers,
+                      const CellIndex &cell_index);
+
+void encode_replay_tiles_with_cell_index(
+    std::vector<PassengerRequest> &requests,
+    std::vector<DriverSnapshot> &drivers, const CellIndex &cell_index);
+
+std::unordered_map<TileId, double> build_smoothed_hotspot_scores(
+    const TileGridStats &stats, const CellIndex &cell_index,
+    const CellSmoothingOptions &options);
 
 std::string format_tile_grid_stats_csv(const TileGridStats &stats);

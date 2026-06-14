@@ -22,6 +22,18 @@ bool has_assignment(const std::vector<Assignment> &assignments, int taxi_id,
   return false;
 }
 
+bool has_assignment(const std::vector<Assignment> &assignments, int taxi_id,
+                    int request_id, int pickup_cost, int dispatch_cost) {
+  for (const auto &assignment : assignments) {
+    if (assignment.taxi_id == taxi_id && assignment.request_id == request_id &&
+        assignment.pickup_cost == pickup_cost &&
+        assignment.dispatch_cost == dispatch_cost) {
+      return true;
+    }
+  }
+  return false;
+}
+
 } // namespace
 
 int main() {
@@ -64,10 +76,19 @@ int main() {
   REQUIRE(has_assignment(duplicate_result, 1, 203, 3));
   REQUIRE(has_assignment(duplicate_result, 2, 204, 4));
 
+  std::vector<CandidateEdge> dispatch_cost_edges;
+  dispatch_cost_edges.emplace_back(1, 501, 100, 1);
+  dispatch_cost_edges.emplace_back(2, 501, 1, 50);
+
+  const auto dispatch_cost_result = strategy.assign(dispatch_cost_edges);
+  REQUIRE(dispatch_cost_result.size() == 1);
+  REQUIRE(has_assignment(dispatch_cost_result, 1, 501, 100, 1));
+
   std::vector<CandidateEdge> invalid_edges;
   invalid_edges.emplace_back(-1, 301, 1);
   invalid_edges.emplace_back(1, -1, 1);
   invalid_edges.emplace_back(1, 301, -1);
+  invalid_edges.emplace_back(1, 301, 1, -1);
   REQUIRE(strategy.assign(invalid_edges).empty());
 
   std::vector<DriverSnapshot> drivers;

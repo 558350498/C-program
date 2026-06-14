@@ -32,12 +32,13 @@ This index is for quick navigation only. It should point to current paths and av
 | Taxi lifecycle | `include/taxi_system.h` | `src/taxi_system.cpp` | `tests/taxi_system_test.cpp` |
 | Request lifecycle | `include/requestcontext.h` | `src/requestcontext.cpp` | `tests/requestcontext_test.cpp` |
 | Dispatch strategy | `include/dispatch_strategy.h` | `src/dispatch_strategy.cpp` | `tests/dispatch_strategy_test.cpp` |
+| Cell index | `include/cell_index.h` | `src/cell_index.cpp` | `tests/cell_index_test.cpp` |
 | Candidate edges | `include/dispatch_batch.h` | header-only / core library | `tests/dispatch_batch_test.cpp` |
 | MCMF matching | `include/mcmf_batch_strategy.h` | `src/mcmf_batch_strategy.cpp` | `tests/mcmf_batch_strategy_test.cpp` |
 | Replay simulator | `include/dispatch_replay.h` | `src/dispatch_replay.cpp` | `tests/dispatch_replay_test.cpp` |
 | Replay CSV IO | `include/dispatch_replay_io.h` | `src/dispatch_replay_io.cpp` | `tests/dispatch_replay_io_test.cpp` |
 | Spatial index | `include/spatial_index.h`, `include/kd_tree_spatial_index.h` | `src/kd_tree_spatial_index.cpp` | `tests/kd_tree_spatial_index_test.cpp` |
-| Tile stats | `include/tile_grid_stats.h` | `src/tile_grid_stats.cpp` | `tests/tile_grid_stats_test.cpp` |
+| Tile / cell stats | `include/tile_grid_stats.h` | `src/tile_grid_stats.cpp` | `tests/tile_grid_stats_test.cpp` |
 | Region map | `include/tile_region_map.h` | `src/tile_region_map.cpp` | `tests/tile_region_map_test.cpp` |
 
 ## C++ Executables
@@ -58,8 +59,11 @@ This index is for quick navigation only. It should point to current paths and av
 | `tools/go_experiment_summary/` | Summarize experiment CSVs and region evidence |
 | `tools/geojson_export/` | `tile_stats.csv` / requests -> GeoJSON |
 | `tools/replay_visual_export/` | replay CSV outputs -> live/batch viewer artifacts |
-| `tools/route_visual_export/` | live paths -> OSRM-compatible route polylines |
+| `tools/route_visual_export/` | live paths or candidate route pairs -> OSRM-compatible routes and route-cost CSV |
 | `scripts/prepare_map_viewer_demo.ps1` | Prepare local viewer demo artifacts |
+| `scripts/run_report_scenarios.ps1` | Generate report-ready baseline, CellIndex opportunity, and candidate-route artifacts |
+| `scripts/run_cost_grid_search.ps1` | Grid-search dispatch opportunity parameters and write ranked calibration output |
+| `scripts/project_doctor.ps1` | Check progressive-disclosure docs, legacy shim shape, and inline repo paths |
 
 ## Viewer
 
@@ -85,6 +89,10 @@ This index is for quick navigation only. It should point to current paths and av
 cmake -S . -B build-mingw -G "MinGW Makefiles"
 cmake --build build-mingw
 ctest --test-dir build-mingw --output-on-failure
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\project_doctor.ps1
 ```
 
 ```powershell

@@ -105,6 +105,7 @@ int main() {
 
   const DispatchReplayReport report =
       simulator.run_report(drivers, requests, options);
+  REQUIRE(report.candidate_routes.empty());
   DispatchReplayOptions indexed_options(
       0, 720, 30, 600, CandidateEdgeOptions(10.0, 10.0, 0, false), true);
   const DispatchReplayReport indexed_report =
@@ -150,6 +151,22 @@ int main() {
   REQUIRE(report.request_outcomes[1].assigned);
   REQUIRE(report.request_outcomes[1].completed);
 
+  DispatchReplayOptions route_recording_options(
+      0, 720, 30, 600, CandidateEdgeOptions(10.0, 10.0, 0, false), false,
+      false, true);
+  const DispatchReplayReport route_report =
+      simulator.run_report(drivers, requests, route_recording_options);
+  REQUIRE(route_report.candidate_routes.size() == 2);
+  REQUIRE(route_report.candidate_routes[0].batch_time == 30);
+  REQUIRE(route_report.candidate_routes[0].taxi_id == 1);
+  REQUIRE(route_report.candidate_routes[0].request_id == 101);
+  REQUIRE(route_report.candidate_routes[0].start_lon == 0.0);
+  REQUIRE(route_report.candidate_routes[0].start_lat == 0.0);
+  REQUIRE(route_report.candidate_routes[0].end_lon == 3.0);
+  REQUIRE(route_report.candidate_routes[0].end_lat == 4.0);
+  REQUIRE(route_report.candidate_routes[0].pickup_cost == 50);
+  REQUIRE(route_report.candidate_routes[0].dispatch_cost == 50);
+
   bool saw_first_assignment_batch = false;
   for (const auto &log : report.batch_logs) {
     if (log.batch_time == 30) {
@@ -178,6 +195,13 @@ int main() {
   REQUIRE(outcome_csv.find("request_id,pending_batch_count") == 0);
   REQUIRE(outcome_csv.find("101,1,1,1,1,1,1,1,30,80,680,20,50") !=
           std::string::npos);
+  const std::string candidate_route_csv =
+      format_dispatch_replay_candidate_routes_csv(route_report);
+  REQUIRE(candidate_route_csv.find(
+              "batch_time,taxi_id,request_id,leg_type,start_lon") == 0);
+  REQUIRE(candidate_route_csv.find(
+              "30,1,101,dispatch_to_pickup,0.000000,0.000000,3.000000,"
+              "4.000000,50,50") != std::string::npos);
 
   std::vector<PassengerRequest> unserved_requests;
   unserved_requests.emplace_back(201, 2001, 10, Point(100.0, 100.0, 201),

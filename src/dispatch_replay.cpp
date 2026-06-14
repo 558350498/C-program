@@ -34,10 +34,10 @@ struct ReplayEventCompare {
   }
 };
 
-int sum_pickup_cost(const std::vector<Assignment> &assignments) {
+int sum_dispatch_cost(const std::vector<Assignment> &assignments) {
   int total = 0;
   for (const auto &assignment : assignments) {
-    total += assignment.pickup_cost;
+    total += assignment.dispatch_cost;
   }
   return total;
 }
@@ -128,6 +128,7 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
 
   TaxiSystem system(nullptr, nullptr, options.taxi_system_logging_enabled);
   KdTreeSpatialIndex free_driver_index;
+  ScanCandidateEdgeGenerator scan_candidate_generator;
   std::unordered_map<int, DriverSnapshot> drivers;
   for (const auto &driver : initial_drivers) {
     if (driver.taxi_id < 0) {
@@ -210,14 +211,42 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
 
       BatchDispatchInput batch(event.time, available_drivers, pending_requests);
       const auto candidate_start = std::chrono::steady_clock::now();
-      const auto candidate_result =
+      const CandidateEdgeGenerationResult candidate_result =
           options.use_indexed_candidate_edges
               ? generate_candidate_edges_indexed_with_stats(
                     batch, options.candidate_options, free_driver_index)
-              : generate_candidate_edges_with_stats(batch,
-                                                    options.candidate_options);
+              : scan_candidate_generator.generate(batch,
+                                                  options.candidate_options);
       const auto candidate_end = std::chrono::steady_clock::now();
       const auto &candidate_edges = candidate_result.edges;
+      if (options.record_candidate_routes) {
+        std::unordered_map<int, DriverSnapshot> available_drivers_by_id;
+        available_drivers_by_id.reserve(available_drivers.size());
+        for (const auto &driver : available_drivers) {
+          available_drivers_by_id.emplace(driver.taxi_id, driver);
+        }
+        std::unordered_map<int, PassengerRequest> pending_requests_by_id;
+        pending_requests_by_id.reserve(pending_requests.size());
+        for (const auto &request : pending_requests) {
+          pending_requests_by_id.emplace(request.request_id, request);
+        }
+        for (const auto &edge : candidate_edges) {
+          const auto driver_it = available_drivers_by_id.find(edge.taxi_id);
+          const auto request_it = pending_requests_by_id.find(edge.request_id);
+          if (driver_it == available_drivers_by_id.end() ||
+              request_it == pending_requests_by_id.end()) {
+            continue;
+          }
+          const DriverSnapshot &driver = driver_it->second;
+          const PassengerRequest &request = request_it->second;
+          report.candidate_routes.emplace_back(
+              event.time, edge.taxi_id, edge.request_id,
+              driver.location.coords[0], driver.location.coords[1],
+              request.pickup_location.coords[0],
+              request.pickup_location.coords[1], edge.pickup_cost,
+              edge.dispatch_cost);
+        }
+      }
       const auto greedy_start = std::chrono::steady_clock::now();
       const auto greedy_assignments = greedy_batch_assign(candidate_edges);
       const auto greedy_end = std::chrono::steady_clock::now();
@@ -232,8 +261,8 @@ DispatchReplayReport DispatchReplaySimulator::run_report(
           elapsed_microseconds(mcmf_start, mcmf_end);
       const long long matching_time =
           greedy_matching_time + mcmf_matching_time;
-      const int greedy_cost = sum_pickup_cost(greedy_assignments);
-      const int mcmf_cost = sum_pickup_cost(mcmf_assignments);
+      const int greedy_cost = sum_dispatch_cost(greedy_assignments);
+      const int mcmf_cost = sum_dispatch_cost(mcmf_assignments);
 
       ++metrics.batch_runs;
       metrics.candidate_generation_time_microseconds +=
@@ -601,5 +630,21 @@ format_dispatch_replay_request_outcomes_csv(const DispatchReplayReport &report) 
            << outcome.pickup_cost << '\n';
   }
 
+  return stream.str();
+}
+
+std::string
+format_dispatch_replay_candidate_routes_csv(const DispatchReplayReport &report) {
+  std::ostringstream stream;
+  stream << "batch_time,taxi_id,request_id,leg_type,start_lon,start_lat,"
+            "end_lon,end_lat,pickup_cost,dispatch_cost\n";
+  stream << std::fixed << std::setprecision(6);
+  for (const auto &route : report.candidate_routes) {
+    stream << route.batch_time << ',' << route.taxi_id << ','
+           << route.request_id << ",dispatch_to_pickup," << route.start_lon
+           << ',' << route.start_lat << ',' << route.end_lon << ','
+           << route.end_lat << ',' << route.pickup_cost << ','
+           << route.dispatch_cost << '\n';
+  }
   return stream.str();
 }

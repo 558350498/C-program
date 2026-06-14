@@ -23,9 +23,9 @@ For current execution slices, read `../plan/README.md` and `../plan/dispatch_nex
 | `simpleTile(grid_cols)` | Current baseline spatial bucket implementation |
 | `TileGridStats` | Pickup/dropoff heat and free-driver side table |
 | `TileRegionMap` | Offline constrained UF audit output |
-| `CellIndex` | Proposed abstraction for multi-resolution spatial cells |
+| `CellIndex` | Abstraction for multi-resolution spatial cells; `SimpleTileCellIndex` can feed replay stats via `--cell-stats-grid-cols` |
 | H3 | Future adapter candidate, not current dependency |
-| OSRM route polyline | Display-only geometry for live replay visualization |
+| OSRM route polyline | Display geometry by default; optional route-cost CSV source for `dispatch_cost` |
 
 ## Update Rules
 

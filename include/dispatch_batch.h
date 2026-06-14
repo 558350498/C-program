@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
@@ -84,25 +86,39 @@ struct Assignment {
   int taxi_id;
   int request_id;
   int pickup_cost;
+  int dispatch_cost;
 
-  Assignment() : taxi_id(-1), request_id(-1), pickup_cost(0) {}
+  Assignment()
+      : taxi_id(-1), request_id(-1), pickup_cost(0), dispatch_cost(0) {}
 
   Assignment(int taxi_id_value, int request_id_value, int pickup_cost_value)
       : taxi_id(taxi_id_value), request_id(request_id_value),
-        pickup_cost(pickup_cost_value) {}
+        pickup_cost(pickup_cost_value), dispatch_cost(pickup_cost_value) {}
+
+  Assignment(int taxi_id_value, int request_id_value, int pickup_cost_value,
+             int dispatch_cost_value)
+      : taxi_id(taxi_id_value), request_id(request_id_value),
+        pickup_cost(pickup_cost_value), dispatch_cost(dispatch_cost_value) {}
 };
 
 struct CandidateEdge {
   int taxi_id;
   int request_id;
   int pickup_cost;
+  int dispatch_cost;
 
-  CandidateEdge() : taxi_id(-1), request_id(-1), pickup_cost(0) {}
+  CandidateEdge()
+      : taxi_id(-1), request_id(-1), pickup_cost(0), dispatch_cost(0) {}
 
   CandidateEdge(int taxi_id_value, int request_id_value,
                 int pickup_cost_value)
       : taxi_id(taxi_id_value), request_id(request_id_value),
-        pickup_cost(pickup_cost_value) {}
+        pickup_cost(pickup_cost_value), dispatch_cost(pickup_cost_value) {}
+
+  CandidateEdge(int taxi_id_value, int request_id_value,
+                int pickup_cost_value, int dispatch_cost_value)
+      : taxi_id(taxi_id_value), request_id(request_id_value),
+        pickup_cost(pickup_cost_value), dispatch_cost(dispatch_cost_value) {}
 };
 
 struct CandidateEdgeStats {
@@ -125,15 +141,77 @@ struct CandidateEdgeGenerationResult {
   CandidateEdgeStats stats;
 };
 
+struct TileDispatchCostModel {
+  bool enabled;
+  double cost_scale;
+  double cold_dropoff_penalty;
+  double hot_dropoff_discount;
+  std::unordered_map<TileId, double> hotspot_score_by_tile;
+
+  TileDispatchCostModel()
+      : enabled(false), cost_scale(0.0), cold_dropoff_penalty(0.0),
+        hot_dropoff_discount(0.0), hotspot_score_by_tile() {}
+};
+
+struct RoutePairKey {
+  long long start_lon_e6;
+  long long start_lat_e6;
+  long long end_lon_e6;
+  long long end_lat_e6;
+
+  RoutePairKey()
+      : start_lon_e6(0), start_lat_e6(0), end_lon_e6(0), end_lat_e6(0) {}
+
+  RoutePairKey(long long start_lon_value, long long start_lat_value,
+               long long end_lon_value, long long end_lat_value)
+      : start_lon_e6(start_lon_value), start_lat_e6(start_lat_value),
+        end_lon_e6(end_lon_value), end_lat_e6(end_lat_value) {}
+
+  bool operator==(const RoutePairKey &other) const {
+    return start_lon_e6 == other.start_lon_e6 &&
+           start_lat_e6 == other.start_lat_e6 &&
+           end_lon_e6 == other.end_lon_e6 && end_lat_e6 == other.end_lat_e6;
+  }
+};
+
+struct RoutePairKeyHash {
+  std::size_t operator()(const RoutePairKey &key) const {
+    std::size_t seed = 0;
+    const auto mix = [&seed](long long value) {
+      const std::size_t hashed = std::hash<long long>{}(value);
+      seed ^= hashed + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    };
+    mix(key.start_lon_e6);
+    mix(key.start_lat_e6);
+    mix(key.end_lon_e6);
+    mix(key.end_lat_e6);
+    return seed;
+  }
+};
+
+struct RouteDispatchCostModel {
+  bool enabled;
+  double cost_scale;
+  std::unordered_map<std::uint64_t, int> cost_by_edge;
+  std::unordered_map<RoutePairKey, int, RoutePairKeyHash> cost_by_route_pair;
+
+  RouteDispatchCostModel()
+      : enabled(false), cost_scale(1.0), cost_by_edge(),
+        cost_by_route_pair() {}
+};
+
 struct CandidateEdgeOptions {
   double radius;
   double seconds_per_distance_unit;
   std::size_t max_edges_per_request;
   bool same_tile_only;
+  RouteDispatchCostModel route_dispatch_cost_model;
+  TileDispatchCostModel tile_dispatch_cost_model;
 
   CandidateEdgeOptions()
       : radius(0.0), seconds_per_distance_unit(1.0),
-        max_edges_per_request(0), same_tile_only(false) {}
+        max_edges_per_request(0), same_tile_only(false),
+        route_dispatch_cost_model(), tile_dispatch_cost_model() {}
 
   CandidateEdgeOptions(double radius_value,
                        double seconds_per_distance_unit_value,
@@ -142,7 +220,8 @@ struct CandidateEdgeOptions {
       : radius(radius_value),
         seconds_per_distance_unit(seconds_per_distance_unit_value),
         max_edges_per_request(max_edges_per_request_value),
-        same_tile_only(same_tile_only_value) {}
+        same_tile_only(same_tile_only_value), route_dispatch_cost_model(),
+        tile_dispatch_cost_model() {}
 };
 
 struct BatchDispatchInput {
@@ -198,13 +277,122 @@ inline int estimate_pickup_cost(const Point &driver_location,
   return static_cast<int>(std::llround(cost));
 }
 
+inline std::uint64_t route_dispatch_cost_key(int taxi_id, int request_id) {
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(taxi_id))
+          << 32) |
+         static_cast<std::uint32_t>(request_id);
+}
+
+inline long long quantize_route_coordinate(double value) {
+  if (!std::isfinite(value)) {
+    return 0;
+  }
+  return static_cast<long long>(std::llround(value * 1000000.0));
+}
+
+inline RoutePairKey route_pair_key(double start_lon, double start_lat,
+                                   double end_lon, double end_lat) {
+  return RoutePairKey(quantize_route_coordinate(start_lon),
+                      quantize_route_coordinate(start_lat),
+                      quantize_route_coordinate(end_lon),
+                      quantize_route_coordinate(end_lat));
+}
+
+inline RoutePairKey route_pair_key(const Point &start, const Point &end) {
+  return route_pair_key(start.coords[0], start.coords[1], end.coords[0],
+                        end.coords[1]);
+}
+
+inline int clamp_dispatch_cost(double cost, int fallback_cost) {
+  if (!std::isfinite(cost)) {
+    return fallback_cost;
+  }
+  if (cost <= 0.0) {
+    return 0;
+  }
+  if (cost >= static_cast<double>(std::numeric_limits<int>::max())) {
+    return std::numeric_limits<int>::max();
+  }
+  return static_cast<int>(std::llround(cost));
+}
+
+inline int estimate_route_dispatch_cost(
+    int taxi_id, int request_id, const Point &driver_location,
+    const Point &pickup_location, int pickup_cost,
+    const RouteDispatchCostModel &model) {
+  if (!model.enabled || model.cost_scale <= 0.0 || taxi_id < 0 ||
+      request_id < 0) {
+    return pickup_cost;
+  }
+
+  const auto cost_it =
+      model.cost_by_edge.find(route_dispatch_cost_key(taxi_id, request_id));
+  if (cost_it != model.cost_by_edge.end() && cost_it->second >= 0) {
+    return clamp_dispatch_cost(static_cast<double>(cost_it->second) *
+                                   model.cost_scale,
+                               pickup_cost);
+  }
+
+  const auto route_pair_it =
+      model.cost_by_route_pair.find(route_pair_key(driver_location,
+                                                   pickup_location));
+  if (route_pair_it == model.cost_by_route_pair.end() ||
+      route_pair_it->second < 0) {
+    return pickup_cost;
+  }
+
+  return clamp_dispatch_cost(static_cast<double>(route_pair_it->second) *
+                                 model.cost_scale,
+                             pickup_cost);
+}
+
+inline int estimate_dispatch_cost(int taxi_id,
+                                  const PassengerRequest &request,
+                                  const Point &driver_location,
+                                  int pickup_cost,
+                                  const CandidateEdgeOptions &options) {
+  const int base_cost = estimate_route_dispatch_cost(
+      taxi_id, request.request_id, driver_location, request.pickup_location,
+      pickup_cost,
+      options.route_dispatch_cost_model);
+
+  const TileDispatchCostModel &model = options.tile_dispatch_cost_model;
+  if (!model.enabled || model.cost_scale <= 0.0) {
+    return base_cost;
+  }
+
+  double dropoff_hotspot = 0.0;
+  const auto hotspot_it =
+      model.hotspot_score_by_tile.find(request.dropoff_tile);
+  if (hotspot_it != model.hotspot_score_by_tile.end()) {
+    dropoff_hotspot = std::clamp(hotspot_it->second, 0.0, 1.0);
+  }
+  const double cold_dropoff = 1.0 - dropoff_hotspot;
+  const double opportunity_adjustment =
+      model.cold_dropoff_penalty * cold_dropoff -
+      model.hot_dropoff_discount * dropoff_hotspot;
+  const double adjusted_cost =
+      static_cast<double>(base_cost) +
+      model.cost_scale * opportunity_adjustment;
+
+  return clamp_dispatch_cost(adjusted_cost, base_cost);
+}
+
+inline int estimate_dispatch_cost(const PassengerRequest &request,
+                                  int pickup_cost,
+                                  const CandidateEdgeOptions &options) {
+  return estimate_dispatch_cost(-1, request, request.pickup_location,
+                                pickup_cost, options);
+}
+
 inline std::vector<CandidateEdge>
 normalize_candidate_edges(std::vector<CandidateEdge> edges) {
   edges.erase(std::remove_if(edges.begin(), edges.end(),
                              [](const CandidateEdge &edge) {
                                return edge.taxi_id < 0 ||
                                       edge.request_id < 0 ||
-                                      edge.pickup_cost < 0;
+                                      edge.pickup_cost < 0 ||
+                                      edge.dispatch_cost < 0;
                              }),
               edges.end());
 
@@ -215,6 +403,9 @@ normalize_candidate_edges(std::vector<CandidateEdge> edges) {
               }
               if (lhs.request_id != rhs.request_id) {
                 return lhs.request_id < rhs.request_id;
+              }
+              if (lhs.dispatch_cost != rhs.dispatch_cost) {
+                return lhs.dispatch_cost < rhs.dispatch_cost;
               }
               return lhs.pickup_cost < rhs.pickup_cost;
             });
@@ -276,13 +467,20 @@ inline CandidateEdgeGenerationResult generate_candidate_edges_with_stats(
         continue;
       }
 
-      request_edges.emplace_back(driver.taxi_id, request.request_id, cost);
+      request_edges.emplace_back(driver.taxi_id, request.request_id, cost,
+                                 estimate_dispatch_cost(driver.taxi_id,
+                                                        request,
+                                                        driver.location, cost,
+                                                        options));
     }
 
     request_edges = normalize_candidate_edges(std::move(request_edges));
 
     std::sort(request_edges.begin(), request_edges.end(),
               [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+                if (lhs.dispatch_cost != rhs.dispatch_cost) {
+                  return lhs.dispatch_cost < rhs.dispatch_cost;
+                }
                 if (lhs.pickup_cost != rhs.pickup_cost) {
                   return lhs.pickup_cost < rhs.pickup_cost;
                 }
@@ -370,13 +568,20 @@ inline CandidateEdgeGenerationResult generate_candidate_edges_indexed_with_stats
         continue;
       }
 
-      request_edges.emplace_back(driver.taxi_id, request.request_id, cost);
+      request_edges.emplace_back(driver.taxi_id, request.request_id, cost,
+                                 estimate_dispatch_cost(driver.taxi_id,
+                                                        request,
+                                                        driver.location, cost,
+                                                        options));
     }
 
     request_edges = normalize_candidate_edges(std::move(request_edges));
 
     std::sort(request_edges.begin(), request_edges.end(),
               [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+                if (lhs.dispatch_cost != rhs.dispatch_cost) {
+                  return lhs.dispatch_cost < rhs.dispatch_cost;
+                }
                 if (lhs.pickup_cost != rhs.pickup_cost) {
                   return lhs.pickup_cost < rhs.pickup_cost;
                 }
@@ -449,13 +654,20 @@ inline CandidateEdgeGenerationResult generate_candidate_edges_indexed_with_stats
         continue;
       }
 
-      request_edges.emplace_back(driver.taxi_id, request.request_id, cost);
+      request_edges.emplace_back(driver.taxi_id, request.request_id, cost,
+                                 estimate_dispatch_cost(driver.taxi_id,
+                                                        request,
+                                                        driver.location, cost,
+                                                        options));
     }
 
     request_edges = normalize_candidate_edges(std::move(request_edges));
 
     std::sort(request_edges.begin(), request_edges.end(),
               [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+                if (lhs.dispatch_cost != rhs.dispatch_cost) {
+                  return lhs.dispatch_cost < rhs.dispatch_cost;
+                }
                 if (lhs.pickup_cost != rhs.pickup_cost) {
                   return lhs.pickup_cost < rhs.pickup_cost;
                 }
@@ -503,11 +715,41 @@ generate_candidate_edges(const BatchDispatchInput &batch, double radius,
       batch, CandidateEdgeOptions(radius, seconds_per_distance_unit));
 }
 
+class CandidateEdgeGenerator {
+public:
+  virtual ~CandidateEdgeGenerator() = default;
+
+  virtual CandidateEdgeGenerationResult
+  generate(const BatchDispatchInput &batch,
+           const CandidateEdgeOptions &options) const = 0;
+};
+
+class ScanCandidateEdgeGenerator : public CandidateEdgeGenerator {
+public:
+  CandidateEdgeGenerationResult
+  generate(const BatchDispatchInput &batch,
+           const CandidateEdgeOptions &options) const override {
+    return generate_candidate_edges_with_stats(batch, options);
+  }
+};
+
+class IndexedCandidateEdgeGenerator : public CandidateEdgeGenerator {
+public:
+  CandidateEdgeGenerationResult
+  generate(const BatchDispatchInput &batch,
+           const CandidateEdgeOptions &options) const override {
+    return generate_candidate_edges_indexed_with_stats(batch, options);
+  }
+};
+
 inline std::vector<Assignment>
 greedy_batch_assign(std::vector<CandidateEdge> edges) {
   edges = normalize_candidate_edges(std::move(edges));
   std::sort(edges.begin(), edges.end(),
             [](const CandidateEdge &lhs, const CandidateEdge &rhs) {
+              if (lhs.dispatch_cost != rhs.dispatch_cost) {
+                return lhs.dispatch_cost < rhs.dispatch_cost;
+              }
               if (lhs.pickup_cost != rhs.pickup_cost) {
                 return lhs.pickup_cost < rhs.pickup_cost;
               }
@@ -532,7 +774,8 @@ greedy_batch_assign(std::vector<CandidateEdge> edges) {
 
     used_taxis.insert(edge.taxi_id);
     served_requests.insert(edge.request_id);
-    assignments.emplace_back(edge.taxi_id, edge.request_id, edge.pickup_cost);
+    assignments.emplace_back(edge.taxi_id, edge.request_id, edge.pickup_cost,
+                             edge.dispatch_cost);
   }
 
   return assignments;

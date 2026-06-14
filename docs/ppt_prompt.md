@@ -7,7 +7,7 @@
 - 展示主线：离线数据进入系统，经过空间索引、状态机、候选边、MCMF、replay 仿真，再导出静态 artifact 进入 Map Viewer 解释。
 - 重点放在系统架构与算法闭环，不把前端 UI 当主菜。
 - 前端定位必须说清楚：Map Viewer 是 replay artifact viewer，不是生产后台、不调后端 API、不实时派单。
-- 计价、hot/cold、真实道路 route 都是解释层或实验层，不反写 C++ replay、候选边、MCMF cost、pickup_cost 或完成率。
+- 计价、hot/cold、真实道路 route 默认是解释层或实验层；只有显式 `--cell-stats-grid-cols`、`dispatch_cost` side table / cost-scale 选项会影响 matching，不反写 `pickup_cost`、完成率或 replay 时间事实。
 - tile 矩形来自固定网格 `simpleTile(grid_cols)`，不是 UF region 产物；UF 只把相邻相似 tile 合并成离线审计 region。
 
 ## 建议 PPT 结构
@@ -69,10 +69,10 @@
   - 候选边结构：`taxi_id -> request_id, pickup_cost`。
   - 只连接当前 batch 中可用司机和 pending request。
   - 支持 radius、per-request top-k、可选 same tile 粗筛。
-  - 当前边权是接驾成本，来自几何距离换算，不是订单收入或 pricing factor。
+- 默认边权是接驾成本，来自几何距离换算；显式实验可用 `dispatch_cost` 接入 route-cost CSV 或 hot/cold adjustment。
 - 建议图示：司机点、订单点、候选边集合。
 - 讲解重点：CandidateEdge 是真实业务和图算法之间的接口。
-- 避免误讲：不要说边权已经用了热区、计价或真实道路 ETA。
+- 避免误讲：不要说默认边权已经用了热区、计价或实时真实道路 ETA。
 
 ### 7. MCMF 批量派单
 
@@ -162,8 +162,8 @@ factor = clamp(
   - Map Viewer 已能展示 live、batch、tile、sample orders。
 - 边界：
   - 不做在线派单服务。
-  - 不把真实道路 ETA 写入候选边成本。
-  - 不让 pricing v1 改变 MCMF cost。
+  - 不把真实道路 ETA 写入 `pickup_cost`。
+  - 不让 pricing v1 在没有显式 cost-scale 时改变 MCMF cost。
   - 不让 UF region 作为硬派单边界。
 - 建议图示：已完成 / 不做 / 下一步三栏。
 
@@ -172,11 +172,11 @@ factor = clamp(
 - 可选方向：
   - local multi-resolution hex grid / H3-like CellIndex：替代 naive rectangular tile，支持更自然的邻域扩散和多尺度供需统计。
   - region 审计图层：把 `region_stats.csv` / `region_map.csv` 作为只读图层接入 Map Viewer。
-  - 真实 ETA 成本实验：在独立阶段评估 OSRM/GraphHopper/Valhalla 的预计算和缓存，不直接塞进当前主链路。
+  - 真实 ETA 成本实验：当前已有候选对 route-cost CSV 入口，并支持去重/缓存；下一步是在 OSRM 可用时生成正式对比报告，不在 replay loop 内实时请求路由。
   - CandidateEdgeGenerator 抽象：为 KD-tree、tile、hex grid 候选生成器做可替换接口。
 - 建议图示：路线图。
 - 讲解重点：当前系统已经可以展示，后续是从课程项目走向毕设级系统的扩展。
-- 避免误讲：不要承诺已经完成 H3 或真实 ETA 派单。
+- 避免误讲：不要承诺已经完成 H3 或全量候选对真实 ETA 派单。
 
 ## 生成风格要求
 

@@ -24,8 +24,8 @@ Kaggle CSV
 - C++ replay outcome 是完成率、等待、接驾成本和订单生命周期的事实源。
 - Go 可以清洗 raw CSV、编排实验、汇总报表和导出展示文件。
 - 前端只读取静态 artifact，不触发 replay，不派单，不写回订单。
-- OSRM / OSM / route polyline 只属于展示层，不能写回 `pickup_cost` 或 MCMF cost。
-- Pricing v1 只进报表和抽样订单解释，不能改变 dispatch 结果。
+- OSRM / OSM / route polyline 默认只属于展示层；只有显式提供 route-cost CSV side table 时才可进入 `dispatch_cost`，永远不写回 `pickup_cost`。
+- Pricing v1 默认只进报表和抽样订单解释；只有显式 cost-scale 选项才可改变 dispatch matching。
 
 ## Active Path
 
@@ -48,6 +48,8 @@ tools/go_csv_preprocess/
 | Indexed path | correctness/performance comparison only |
 | Stress path | `unlimited`, theory upper bound only |
 | Spatial baseline | `simpleTile(grid_cols)` |
+| Cell abstraction | `SimpleTileCellIndex` over current tile semantics |
+| Cell stats path | optional `--cell-stats-grid-cols N` replay/k-sweep re-encoding |
 | Resolution sweep | `100 / 200 / 400` grid cols |
 | Region map | constrained offline UF audit output |
 | Future spatial direction | H3-like multi-resolution `CellIndex` |
@@ -71,6 +73,24 @@ When changing the algorithmic path, keep the loop evidence-backed:
 3. Update `PROJECT_STATUS.md` if the active path changes.
 4. Update `plan/dispatch_next_steps.md` only when the next executable slice changes.
 
+Current cost split:
+
+- `pickup_cost` remains the replay timeline fact.
+- `dispatch_cost` is the optional matching cost used by greedy/MCMF.
+- Without explicit route-cost or opportunity-cost options, `dispatch_cost == pickup_cost`.
+- `--route-cost-csv` can load road-network route seconds as a side table for matching.
+- `--cell-stats-grid-cols` can make heat/cold stats come from `SimpleTileCellIndex` cells.
+- `--dispatch-opportunity-cost-scale` can add hot/cold opportunity adjustment to that matching cost.
+- `--cell-neighbor-rings` / `--cell-neighbor-weight` smooth hotspot scores over nearby cells.
+- `--cell-parent-grid-cols` / `--cell-parent-weight` add coarse parent-cell fallback.
+- `scripts/run_cost_grid_search.ps1` can grid-search scale/penalty/discount choices and rank candidate parameter sets.
+
+Current report smoke evidence:
+
+- Baseline: `assigned=9`, `completed=9`, `mcmf_cost=1321`, `applied_pickup_cost=1321`.
+- CellIndex opportunity: `assigned=9`, `completed=9`, `mcmf_cost=1437`, `applied_pickup_cost=1321`.
+- Route-cost CellIndex opportunity with local OSRM: `assigned=9`, `completed=9`, `mcmf_cost=772`, `applied_pickup_cost=1321`.
+
 ## Hard Artifacts
 
 | Artifact | Purpose | Current home |
@@ -79,6 +99,11 @@ When changing the algorithmic path, keep the loop evidence-backed:
 | Timeline model | Event order and request/taxi lifecycle | `docs/timeline_model.md` |
 | Strategy model | Non-ML candidate, pricing, and opportunity-cost rules | `docs/algorithm_and_strategy.md` |
 | Region model | Tile / region / heat / H3-like upgrade boundary | `docs/region_design.md` |
+| Cell index seam | H3-ready spatial cell abstraction | `include/cell_index.h`, `src/cell_index.cpp` |
+| Cell-backed stats | Optional CellIndex replay/statistics bridge | `include/tile_grid_stats.h`, `src/tile_grid_stats.cpp` |
+| Route cost side table | Optional road-network cost bridge into `dispatch_cost` | `tools/route_visual_export/`, `include/dispatch_batch.h` |
+| Cost grid search | Parameter calibration smoke and ranked CSV output | `scripts/run_cost_grid_search.ps1` |
+| Project doctor | Progressive-disclosure doc/path check | `scripts/project_doctor.ps1` |
 | Current state | Active path, risks, and legal next actions | `PROJECT_STATUS.md` |
 | Fast index | File/module navigation only | `INDEX.md` |
 | Execution plans | Durable repo-level plan slices | `plan/` |
@@ -92,6 +117,7 @@ Build and run C++ tests:
 cmake -S . -B build-mingw -G "MinGW Makefiles"
 cmake --build build-mingw
 ctest --test-dir build-mingw --output-on-failure
+powershell -ExecutionPolicy Bypass -File scripts\project_doctor.ps1
 ```
 
 Run the Vite map viewer:
@@ -110,6 +136,73 @@ go test ./...
 
 cd ..\route_visual_export
 go test ./...
+```
+
+Generate the report scenario packet:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File scripts\run_report_scenarios.ps1 `
+  -OutputDir build-local\report-scenarios `
+  -EndTime 120 `
+  -Radius 0.03 `
+  -K 1
+```
+
+This writes `summary.md`, baseline/cell-opportunity CSVs, and candidate route pairs under `build-local\report-scenarios`. Add `-RunRouter` when a local OSRM-compatible router is available; route requests are deduplicated and cached in `route_cache.csv`.
+
+Run a small cost-parameter grid search:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File scripts\run_cost_grid_search.ps1 `
+  -BuildDir build-codex-check `
+  -OutputDir build-local\cost-grid-search `
+  -EndTime 120 `
+  -Radius 0.03 `
+  -K 1 `
+  -OpportunityScales 0,25,50 `
+  -ColdPenalties 1,2 `
+  -HotDiscounts 0,1 `
+  -CellNeighborRings 1 `
+  -CellNeighborWeight 0.5 `
+  -CellParentGridCols 10 `
+  -CellParentWeight 0.25
+```
+
+Run a small CellIndex + opportunity-cost replay and export candidate route pairs:
+
+```powershell
+.\build-mingw\replay_csv_demo.exe `
+  --requests data\normalized\requests.csv `
+  --drivers data\normalized\drivers.csv `
+  --end-time 120 `
+  --radius 0.03 `
+  --max-edges-per-request 1 `
+  --cell-stats-grid-cols 100 `
+  --dispatch-opportunity-cost-scale 25 `
+  --candidate-routes-csv build-local\candidate_routes.csv
+```
+
+Route candidate pairs into a cost table, then feed the table back into dispatch:
+
+```powershell
+cd tools\route_visual_export
+go run . `
+  -input-route-pairs-csv ..\..\build-local\candidate_routes.csv `
+  -route-cost-csv ..\..\build-local\route_costs.csv `
+  -route-cache-csv ..\..\build-local\route_cache.csv
+
+cd ..\..
+.\build-mingw\replay_csv_demo.exe `
+  --requests data\normalized\requests.csv `
+  --drivers data\normalized\drivers.csv `
+  --end-time 120 `
+  --radius 0.03 `
+  --max-edges-per-request 1 `
+  --cell-stats-grid-cols 100 `
+  --route-cost-csv build-local\route_costs.csv `
+  --dispatch-opportunity-cost-scale 25
 ```
 
 Generate a small normalized sample:

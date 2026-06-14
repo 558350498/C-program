@@ -17,7 +17,8 @@ entry-map cleanup
 -> lightweight project doctor
 -> CellIndex abstraction
 -> simpleTile adapter
--> optional H3 adapter evaluation
+-> route-cost evidence run
+-> CandidateEdgeGenerator / H3 adapter evaluation
 ```
 
 This preserves the current replay loop while making the spatial model deeper and more agent-readable.

@@ -1,6 +1,6 @@
 # 区域设计笔记
 
-这份文档记录 tile / region / heat 的边界。当前阶段已经实现受约束离线 UF region map 原型，并新增 `100 / 200 / 400` 多分辨率 tile sweep；它们都只服务统计和审计，不接入 dispatch、MCMF cost、动态区域重划或候选粗筛。
+这份文档记录 tile / region / heat 的边界。当前阶段已经实现受约束离线 UF region map 原型，并新增 `100 / 200 / 400` 多分辨率 tile sweep；默认情况下它们只服务统计和审计，不接入动态区域重划或候选粗筛。若显式打开 `--cell-stats-grid-cols`，heat/cold 统计来源会切到 `SimpleTileCellIndex` cell；若显式打开 `--dispatch-opportunity-cost-scale`，heat/cold opportunity adjustment 会进入 `dispatch_cost` 参与匹配；若显式打开 `--route-cost-csv`，路网 duration side table 也可进入 `dispatch_cost`。这些都不改写 `pickup_cost` 或 replay 时间线。
 
 ## 1. 核心分层
 
@@ -27,12 +27,13 @@ raw lat/lon -> tile_id -> region_id / zone_id
 - 优点是没有外部依赖、可解释、调试成本低。
 - 缺点是经纬度矩形网格存在面积变形，邻居和距离语义比专业地理网格弱。
 
-H3 是后续最值得讨论的升级路线，但当前还没有接入：
+H3 是后续最值得讨论的升级路线；当前已先接入一个 H3-ready 的 `CellIndex` seam：
 
 - H3 更适合真实地理分析、层级 cell、邻居查询、热区聚合和供需流向。
 - H3 的 hex cell 比方格更适合做半径近似和空间平滑。
 - 引入 H3 会带来外部依赖、跨语言绑定和历史 CSV 兼容问题。
-- 如果接入，应先通过抽象层隔离，而不是把 H3 API 直接写进 replay 或 dispatch。
+- `SimpleTileCellIndex` 是第一版 adapter，包装现有 `simpleTile(grid_cols)` 语义。
+- 如果接入 H3，应作为第二个 adapter，而不是把 H3 API 直接写进 replay 或 dispatch。
 
 建议的抽象边界：
 
@@ -44,7 +45,7 @@ CellIndex
   parent(cell_id, resolution) -> cell_id
 ```
 
-第一步可以让 `simpleTile` 实现这个接口；如果后续确认需要更真实的地理网格，再增加 H3 实现。地图瓦片、真实道路路由、OSM 中间件可以服务展示层，但不作为当前 region / heat 统计的前置条件；前端在线 raster 底图和 OSRM route polyline 都只用于视觉对齐与 replay 展示，不反向定义 region。
+第一步已经由 `SimpleTileCellIndex` 落地，并通过 `--cell-stats-grid-cols` 进入 replay/k-sweep 的统计与调配成本路径；如果后续确认需要更真实的地理网格，再增加 H3 实现。地图瓦片、真实道路路由、OSM 中间件可以服务展示层和离线路由成本预计算，但不作为当前 region / heat 统计的前置条件；前端在线 raster 底图和 OSRM route polyline 默认只用于视觉对齐与 replay 展示，不反向定义 region。路网 duration 只有经显式 route-cost CSV 才能进入 `dispatch_cost`。
 
 ## 3. 当前结论
 
@@ -150,7 +151,7 @@ Phase 6: strategy integration
 
 - 先用于报告和候选覆盖审计。
 - 再考虑候选粗筛。
-- 最后才评估是否把 opportunity adjustment 接入 MCMF cost 或动态定价估算。
+- 当前已经可以显式把 CellIndex heat/cold opportunity adjustment 和 route-cost CSV 接入 `dispatch_cost`；后续再评估动态定价估算是否也需要进入调配成本。
 
 ## 6. 当前不做
 
@@ -158,6 +159,6 @@ Phase 6: strategy integration
 - 不实现 Tarjan / SCC 区域缩点。
 - 不每个 batch 动态重划 region。
 - 不把 region 作为硬派单边界。
-- 不把区域机会成本写进 MCMF cost。
-- 不做真实道路、拥堵传播或完整格点路径规划。
+- 不把区域机会成本伪装成接驾时间；若显式打开 `--dispatch-opportunity-cost-scale`，它进入 `dispatch_cost` 参与匹配，但 `pickup_cost` 仍是 replay 时间线事实。
+- 不在 replay loop 内做实时真实道路、拥堵传播或完整格点路径规划；真实道路 duration 只能通过显式 side table 进入匹配。
 - 不在当前阶段引入地图瓦片服务器或真实路由中间件。

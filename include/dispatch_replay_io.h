@@ -19,8 +19,22 @@ struct DriverSnapshotCsvLoadResult {
   bool ok() const { return errors.empty(); }
 };
 
+struct RouteDispatchCostCsvLoadResult {
+  RouteDispatchCostModel model;
+  std::size_t loaded_rows;
+  std::size_t skipped_rows;
+  std::vector<std::string> errors;
+
+  RouteDispatchCostCsvLoadResult()
+      : model(), loaded_rows(0), skipped_rows(0), errors() {}
+
+  bool ok() const { return errors.empty(); }
+};
+
 PassengerRequestCsvLoadResult
 load_passenger_requests_csv(const std::string &path);
 
 DriverSnapshotCsvLoadResult load_driver_snapshots_csv(const std::string &path);
 
+RouteDispatchCostCsvLoadResult
+load_route_dispatch_costs_csv(const std::string &path);

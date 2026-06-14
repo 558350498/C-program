@@ -14,6 +14,7 @@
 #include <iostream>
 #include <limits>
 #include <cmath>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <chrono>
@@ -37,6 +38,7 @@ struct CliOptions {
   std::string region_map_csv_path;
   std::string region_stats_csv_path;
   int tile_grid_cols = 100;
+  int cell_stats_grid_cols = 0;
   TimeSeconds start_time = 0;
   TimeSeconds end_time = 0;
   bool end_time_set = false;
@@ -49,8 +51,15 @@ struct CliOptions {
                                   {20, "20"}, {50, "50"}, {0, "unlimited"}};
   bool same_tile_only = false;
   bool use_indexed_candidate_edges = false;
+  std::string route_cost_csv_path;
+  double route_cost_scale = 1.0;
   double cold_dropoff_penalty = 1.0;
   double hot_dropoff_discount = 1.0;
+  double dispatch_opportunity_cost_scale = 0.0;
+  int cell_neighbor_rings = 0;
+  double cell_neighbor_weight = 0.0;
+  int cell_parent_grid_cols = 0;
+  double cell_parent_weight = 0.0;
 };
 
 struct HotColdGroup {
@@ -90,6 +99,7 @@ void print_usage(const char *program) {
       << "  --region-map-csv PATH           write tile-to-region CSV\n"
       << "  --region-stats-csv PATH         write region aggregate CSV\n"
       << "  --tile-grid-cols N              tile grid columns/rows, default 100\n"
+      << "  --cell-stats-grid-cols N        re-encode request/driver tiles with SimpleTileCellIndex\n"
       << "  --start-time SECONDS            replay start time, default 0\n"
       << "  --end-time SECONDS              replay end time, default auto\n"
       << "  --batch-interval SECONDS        batch interval, default 30\n"
@@ -99,8 +109,16 @@ void print_usage(const char *program) {
       << "  --seconds-per-distance-unit N   pickup cost scale, default 100000\n"
       << "  --same-tile-only                only generate same-tile candidates\n"
       << "  --indexed-candidates            generate candidates with KD-Tree index\n"
+      << "  --route-cost-csv PATH           route cost side-table CSV from route visual export\n"
+      << "  --route-cost-scale N            multiply route costs before matching, default 1\n"
       << "  --cold-dropoff-penalty N        opportunity cold dropoff penalty, default 1\n"
       << "  --hot-dropoff-discount N        opportunity hot dropoff discount, default 1\n"
+      << "  --dispatch-opportunity-cost-scale N\n"
+      << "                                  add scaled opportunity adjustment to dispatch cost, default 0\n"
+      << "  --cell-neighbor-rings N         smooth hotspot scores over N CellIndex neighbor rings\n"
+      << "  --cell-neighbor-weight N        neighbor ring decay weight, default 0\n"
+      << "  --cell-parent-grid-cols N       parent grid cols for hotspot fallback, default 0\n"
+      << "  --cell-parent-weight N          parent fallback weight, default 0\n"
       << "  --help                          show this help\n";
 }
 
@@ -221,6 +239,13 @@ CliOptions parse_cli(int argc, char **argv) {
         throw std::runtime_error("invalid --tile-grid-cols");
       }
       options.tile_grid_cols = static_cast<int>(value);
+    } else if (arg == "--cell-stats-grid-cols") {
+      const std::size_t value =
+          parse_size_value(require_value(index, argc, argv), arg);
+      if (value > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid --cell-stats-grid-cols");
+      }
+      options.cell_stats_grid_cols = static_cast<int>(value);
     } else if (arg == "--start-time") {
       options.start_time =
           parse_time_value(require_value(index, argc, argv), arg);
@@ -244,11 +269,39 @@ CliOptions parse_cli(int argc, char **argv) {
       options.same_tile_only = true;
     } else if (arg == "--indexed-candidates") {
       options.use_indexed_candidate_edges = true;
+    } else if (arg == "--route-cost-csv") {
+      options.route_cost_csv_path = require_value(index, argc, argv);
+    } else if (arg == "--route-cost-scale") {
+      options.route_cost_scale =
+          parse_double_value(require_value(index, argc, argv), arg);
     } else if (arg == "--cold-dropoff-penalty") {
       options.cold_dropoff_penalty =
           parse_double_value(require_value(index, argc, argv), arg);
     } else if (arg == "--hot-dropoff-discount") {
       options.hot_dropoff_discount =
+          parse_double_value(require_value(index, argc, argv), arg);
+    } else if (arg == "--dispatch-opportunity-cost-scale") {
+      options.dispatch_opportunity_cost_scale =
+          parse_double_value(require_value(index, argc, argv), arg);
+    } else if (arg == "--cell-neighbor-rings") {
+      const std::size_t value =
+          parse_size_value(require_value(index, argc, argv), arg);
+      if (value > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid --cell-neighbor-rings");
+      }
+      options.cell_neighbor_rings = static_cast<int>(value);
+    } else if (arg == "--cell-neighbor-weight") {
+      options.cell_neighbor_weight =
+          parse_double_value(require_value(index, argc, argv), arg);
+    } else if (arg == "--cell-parent-grid-cols") {
+      const std::size_t value =
+          parse_size_value(require_value(index, argc, argv), arg);
+      if (value > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid --cell-parent-grid-cols");
+      }
+      options.cell_parent_grid_cols = static_cast<int>(value);
+    } else if (arg == "--cell-parent-weight") {
+      options.cell_parent_weight =
           parse_double_value(require_value(index, argc, argv), arg);
     } else {
       throw std::runtime_error("unknown option: " + arg);
@@ -264,14 +317,41 @@ CliOptions parse_cli(int argc, char **argv) {
   if (options.seconds_per_distance_unit <= 0.0) {
     throw std::runtime_error("--seconds-per-distance-unit must be positive");
   }
+  if (options.route_cost_scale <= 0.0) {
+    throw std::runtime_error("--route-cost-scale must be positive");
+  }
   if (options.cold_dropoff_penalty < 0.0) {
     throw std::runtime_error("--cold-dropoff-penalty must be non-negative");
   }
   if (options.hot_dropoff_discount < 0.0) {
     throw std::runtime_error("--hot-dropoff-discount must be non-negative");
   }
+  if (options.dispatch_opportunity_cost_scale < 0.0) {
+    throw std::runtime_error(
+        "--dispatch-opportunity-cost-scale must be non-negative");
+  }
   if (options.tile_grid_cols <= 0) {
     throw std::runtime_error("--tile-grid-cols must be positive");
+  }
+  if (options.cell_stats_grid_cols < 0) {
+    throw std::runtime_error("--cell-stats-grid-cols must be non-negative");
+  }
+  if (options.cell_neighbor_rings < 0) {
+    throw std::runtime_error("--cell-neighbor-rings must be non-negative");
+  }
+  if (options.cell_neighbor_weight < 0.0) {
+    throw std::runtime_error("--cell-neighbor-weight must be non-negative");
+  }
+  if (options.cell_parent_grid_cols < 0) {
+    throw std::runtime_error("--cell-parent-grid-cols must be non-negative");
+  }
+  if (options.cell_parent_weight < 0.0) {
+    throw std::runtime_error("--cell-parent-weight must be non-negative");
+  }
+  if ((options.cell_neighbor_rings > 0 || options.cell_parent_grid_cols > 0) &&
+      options.cell_stats_grid_cols <= 0) {
+    throw std::runtime_error(
+        "CellIndex smoothing requires --cell-stats-grid-cols > 0");
   }
   return options;
 }
@@ -333,6 +413,28 @@ double elapsed_ms(std::chrono::steady_clock::time_point start,
   return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
              end - start)
       .count();
+}
+
+TileDispatchCostModel build_tile_dispatch_cost_model(
+    const TileGridStats &tile_stats, double cost_scale,
+    double cold_dropoff_penalty, double hot_dropoff_discount,
+    const std::unordered_map<TileId, double> *hotspot_scores = nullptr) {
+  TileDispatchCostModel model;
+  if (cost_scale <= 0.0) {
+    return model;
+  }
+  model.enabled = true;
+  model.cost_scale = cost_scale;
+  model.cold_dropoff_penalty = cold_dropoff_penalty;
+  model.hot_dropoff_discount = hot_dropoff_discount;
+  if (hotspot_scores != nullptr) {
+    model.hotspot_score_by_tile = *hotspot_scores;
+  } else {
+    for (const auto &entry : tile_stats.entries()) {
+      model.hotspot_score_by_tile.emplace(entry.tile_id, entry.hotspot_score);
+    }
+  }
+  return model;
 }
 
 void add_group_request(HotColdGroup &group, const PassengerRequest &request,
@@ -538,6 +640,20 @@ int main(int argc, char **argv) {
 
     print_errors(request_result.errors, "request CSV");
     print_errors(driver_result.errors, "driver CSV");
+    RouteDispatchCostCsvLoadResult route_cost_result;
+    if (!cli_options.route_cost_csv_path.empty()) {
+      route_cost_result =
+          load_route_dispatch_costs_csv(cli_options.route_cost_csv_path);
+      route_cost_result.model.cost_scale = cli_options.route_cost_scale;
+      print_errors(route_cost_result.errors, "route cost CSV");
+      std::cerr << "route_cost_edges="
+                << route_cost_result.model.cost_by_edge.size()
+                << " route_cost_pairs="
+                << route_cost_result.model.cost_by_route_pair.size()
+                << " skipped_rows=" << route_cost_result.skipped_rows
+                << " route_cost_scale=" << cli_options.route_cost_scale
+                << '\n';
+    }
 
     if (request_result.requests.empty()) {
       std::cerr << "no usable requests loaded from " << cli_options.requests_path
@@ -550,14 +666,53 @@ int main(int argc, char **argv) {
       return 1;
     }
 
+    std::vector<PassengerRequest> replay_requests = request_result.requests;
+    std::vector<DriverSnapshot> replay_drivers = driver_result.drivers;
+    std::optional<SimpleTileCellIndex> cell_index;
+    if (cli_options.cell_stats_grid_cols > 0) {
+      cell_index.emplace(cli_options.cell_stats_grid_cols);
+      encode_replay_tiles_with_cell_index(replay_requests, replay_drivers,
+                                          *cell_index);
+      std::cerr << "cell_stats_grid_cols="
+                << cli_options.cell_stats_grid_cols << '\n';
+    }
+
     const TimeSeconds end_time =
         cli_options.end_time_set
             ? cli_options.end_time
-            : infer_end_time(request_result.requests, cli_options);
+            : infer_end_time(replay_requests, cli_options);
     const std::string candidate_generation =
         cli_options.use_indexed_candidate_edges ? "indexed" : "scan";
     const TileGridStats tile_stats =
-        build_tile_grid_stats(request_result.requests, driver_result.drivers);
+        build_tile_grid_stats(replay_requests, replay_drivers);
+    std::unordered_map<TileId, double> smoothed_hotspot_scores;
+    const bool use_cell_smoothing =
+        cell_index.has_value() &&
+        (cli_options.cell_neighbor_rings > 0 ||
+         cli_options.cell_parent_grid_cols > 0);
+    if (use_cell_smoothing) {
+      CellSmoothingOptions smoothing_options;
+      smoothing_options.neighbor_rings = cli_options.cell_neighbor_rings;
+      smoothing_options.neighbor_weight = cli_options.cell_neighbor_weight;
+      smoothing_options.parent_grid_cols = cli_options.cell_parent_grid_cols;
+      smoothing_options.parent_weight = cli_options.cell_parent_weight;
+      smoothed_hotspot_scores =
+          build_smoothed_hotspot_scores(tile_stats, *cell_index,
+                                        smoothing_options);
+      std::cerr << "cell_neighbor_rings=" << cli_options.cell_neighbor_rings
+                << " cell_neighbor_weight="
+                << cli_options.cell_neighbor_weight
+                << " cell_parent_grid_cols="
+                << cli_options.cell_parent_grid_cols
+                << " cell_parent_weight=" << cli_options.cell_parent_weight
+                << '\n';
+    }
+    const TileDispatchCostModel tile_dispatch_cost_model =
+        build_tile_dispatch_cost_model(
+            tile_stats, cli_options.dispatch_opportunity_cost_scale,
+            cli_options.cold_dropoff_penalty,
+            cli_options.hot_dropoff_discount,
+            use_cell_smoothing ? &smoothed_hotspot_scores : nullptr);
     write_tile_stats_csv(cli_options.tile_stats_csv_path, tile_stats);
     if (!cli_options.region_map_csv_path.empty() ||
         !cli_options.region_stats_csv_path.empty()) {
@@ -584,18 +739,22 @@ int main(int argc, char **argv) {
         CandidateEdgeOptions candidate_options(
             radius, cli_options.seconds_per_distance_unit, k.value,
             cli_options.same_tile_only);
+        candidate_options.route_dispatch_cost_model =
+            route_cost_result.model;
+        candidate_options.tile_dispatch_cost_model =
+            tile_dispatch_cost_model;
         DispatchReplayOptions replay_options(
             cli_options.start_time, end_time,
             cli_options.batch_interval_seconds,
             cli_options.trip_duration_seconds, candidate_options,
             cli_options.use_indexed_candidate_edges, false);
         const DispatchReplayReport report = simulator.run_report(
-            driver_result.drivers, request_result.requests, replay_options);
+            replay_drivers, replay_requests, replay_options);
         const HotColdReport hot_cold_report = build_hot_cold_report(
-            request_result.requests, report, tile_stats,
+            replay_requests, report, tile_stats,
             cli_options.cold_dropoff_penalty,
             cli_options.hot_dropoff_discount);
-        print_csv_row(radius, k, driver_result.drivers.size(), report.metrics,
+        print_csv_row(radius, k, replay_drivers.size(), report.metrics,
                       candidate_generation, hot_cold_report);
       }
     }

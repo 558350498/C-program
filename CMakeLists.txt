@@ -12,6 +12,7 @@ add_library(
   src/taxi_domain.cpp
   src/dispatch_replay.cpp
   src/dispatch_replay_io.cpp
+  src/cell_index.cpp
   src/kd_tree_spatial_index.cpp
   src/tile_grid_stats.cpp
   src/tile_region_map.cpp
@@ -35,6 +36,9 @@ add_executable(k_sweep src/k_sweep.cpp)
 target_link_libraries(k_sweep PRIVATE taxi_core)
 
 if(BUILD_TESTING)
+  add_executable(cell_index_test tests/cell_index_test.cpp)
+  target_link_libraries(cell_index_test PRIVATE taxi_core)
+
   add_executable(kd_tree_spatial_index_test tests/kd_tree_spatial_index_test.cpp)
   target_link_libraries(kd_tree_spatial_index_test PRIVATE taxi_core)
 
@@ -65,6 +69,7 @@ if(BUILD_TESTING)
   add_executable(taxi_system_test tests/taxi_system_test.cpp)
   target_link_libraries(taxi_system_test PRIVATE taxi_core)
 
+  add_test(NAME cell_index_test COMMAND cell_index_test)
   add_test(NAME kd_tree_spatial_index_test COMMAND kd_tree_spatial_index_test)
   add_test(NAME requestcontext_test COMMAND requestcontext_test)
   add_test(NAME dispatch_strategy_test COMMAND dispatch_strategy_test)
@@ -77,6 +82,8 @@ if(BUILD_TESTING)
   add_test(NAME taxi_system_test COMMAND taxi_system_test)
   add_test(NAME taxi_demo_smoke COMMAND taxi_demo)
 
+  set_tests_properties(cell_index_test PROPERTIES LABELS
+                                                   "smoke;cell-index")
   set_tests_properties(kd_tree_spatial_index_test PROPERTIES LABELS
                                                              "smoke;kd-tree")
   set_tests_properties(requestcontext_test PROPERTIES LABELS
@@ -99,6 +106,7 @@ if(BUILD_TESTING)
 
   add_custom_target(
     smoke
+    COMMAND $<TARGET_FILE:cell_index_test>
     COMMAND $<TARGET_FILE:kd_tree_spatial_index_test>
     COMMAND $<TARGET_FILE:requestcontext_test>
     COMMAND $<TARGET_FILE:dispatch_strategy_test>
@@ -110,9 +118,9 @@ if(BUILD_TESTING)
     COMMAND $<TARGET_FILE:dispatch_replay_io_test>
     COMMAND $<TARGET_FILE:taxi_system_test>
     COMMAND $<TARGET_FILE:taxi_demo>
-    DEPENDS kd_tree_spatial_index_test requestcontext_test dispatch_strategy_test
-            dispatch_batch_test tile_grid_stats_test tile_region_map_test
-            mcmf_batch_strategy_test dispatch_replay_test
+    DEPENDS cell_index_test kd_tree_spatial_index_test requestcontext_test
+            dispatch_strategy_test dispatch_batch_test tile_grid_stats_test
+            tile_region_map_test mcmf_batch_strategy_test dispatch_replay_test
             dispatch_replay_io_test taxi_system_test taxi_demo
     USES_TERMINAL)
 endif()

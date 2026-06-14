@@ -102,7 +102,8 @@ std::vector<int> sorted_unique_taxis(
     const std::vector<CandidateEdge> &candidate_edges) {
   std::vector<int> taxis;
   for (const auto &edge : candidate_edges) {
-    if (edge.taxi_id >= 0 && edge.request_id >= 0 && edge.pickup_cost >= 0) {
+    if (edge.taxi_id >= 0 && edge.request_id >= 0 && edge.pickup_cost >= 0 &&
+        edge.dispatch_cost >= 0) {
       taxis.push_back(edge.taxi_id);
     }
   }
@@ -116,7 +117,8 @@ std::vector<int> sorted_unique_requests(
     const std::vector<CandidateEdge> &candidate_edges) {
   std::vector<int> requests;
   for (const auto &edge : candidate_edges) {
-    if (edge.taxi_id >= 0 && edge.request_id >= 0 && edge.pickup_cost >= 0) {
+    if (edge.taxi_id >= 0 && edge.request_id >= 0 && edge.pickup_cost >= 0 &&
+        edge.dispatch_cost >= 0) {
       requests.push_back(edge.request_id);
     }
   }
@@ -164,7 +166,8 @@ std::vector<Assignment> McmfBatchStrategy::assign(
   }
 
   for (const auto &edge : normalized_edges) {
-    if (edge.taxi_id < 0 || edge.request_id < 0 || edge.pickup_cost < 0) {
+    if (edge.taxi_id < 0 || edge.request_id < 0 || edge.pickup_cost < 0 ||
+        edge.dispatch_cost < 0) {
       continue;
     }
 
@@ -177,7 +180,7 @@ std::vector<Assignment> McmfBatchStrategy::assign(
 
     const int taxi_node = taxi_offset + taxi_it->second;
     const int request_node = request_offset + request_it->second;
-    flow.add_edge(taxi_node, request_node, 1, edge.pickup_cost);
+    flow.add_edge(taxi_node, request_node, 1, edge.dispatch_cost);
   }
 
   for (int request_index = 0;
@@ -199,8 +202,17 @@ std::vector<Assignment> McmfBatchStrategy::assign(
       }
 
       const int request_index = edge.to - request_offset;
+      int pickup_cost = edge.cost;
+      for (const auto &candidate : normalized_edges) {
+        if (candidate.taxi_id == taxi_ids[taxi_index] &&
+            candidate.request_id == request_ids[request_index] &&
+            candidate.dispatch_cost == edge.cost) {
+          pickup_cost = candidate.pickup_cost;
+          break;
+        }
+      }
       assignments.emplace_back(taxi_ids[taxi_index], request_ids[request_index],
-                               edge.cost);
+                               pickup_cost, edge.cost);
     }
   }
 

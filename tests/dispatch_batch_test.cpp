@@ -11,6 +11,7 @@ int main() {
       assert(lhs[index].taxi_id == rhs[index].taxi_id);
       assert(lhs[index].request_id == rhs[index].request_id);
       assert(lhs[index].pickup_cost == rhs[index].pickup_cost);
+      assert(lhs[index].dispatch_cost == rhs[index].dispatch_cost);
     }
   };
 
@@ -57,11 +58,13 @@ int main() {
   assert(edge.taxi_id == 9);
   assert(edge.request_id == 100);
   assert(edge.pickup_cost == 180);
+  assert(edge.dispatch_cost == 180);
 
   Assignment assignment(9, 100, 180);
   assert(assignment.taxi_id == 9);
   assert(assignment.request_id == 100);
   assert(assignment.pickup_cost == 180);
+  assert(assignment.dispatch_cost == 180);
 
   std::vector<DriverSnapshot> drivers;
   drivers.push_back(driver);
@@ -115,9 +118,66 @@ int main() {
   assert(candidate_edges[0].taxi_id == 1);
   assert(candidate_edges[0].request_id == 101);
   assert(candidate_edges[0].pickup_cost == 9);
+  assert(candidate_edges[0].dispatch_cost == 9);
   assert(candidate_edges[1].taxi_id == 2);
   assert(candidate_edges[1].request_id == 102);
   assert(candidate_edges[1].pickup_cost == 8);
+  assert(candidate_edges[1].dispatch_cost == 8);
+
+  CandidateEdgeOptions priced_options(2.0, 10.0);
+  priced_options.tile_dispatch_cost_model.enabled = true;
+  priced_options.tile_dispatch_cost_model.cost_scale = 10.0;
+  priced_options.tile_dispatch_cost_model.cold_dropoff_penalty = 1.0;
+  priced_options.tile_dispatch_cost_model.hot_dropoff_discount = 0.0;
+  priced_options.tile_dispatch_cost_model.hotspot_score_by_tile[9] = 0.2;
+  const auto priced_edges =
+      generate_candidate_edges(matching_batch, priced_options);
+  assert(priced_edges.size() == 2);
+  assert(priced_edges[0].request_id == 101);
+  assert(priced_edges[0].pickup_cost == 9);
+  assert(priced_edges[0].dispatch_cost == 17);
+  assert(priced_edges[1].request_id == 102);
+  assert(priced_edges[1].pickup_cost == 8);
+  assert(priced_edges[1].dispatch_cost == 16);
+
+  CandidateEdgeOptions route_cost_options(2.0, 10.0);
+  route_cost_options.route_dispatch_cost_model.enabled = true;
+  route_cost_options.route_dispatch_cost_model.cost_by_edge
+      [route_dispatch_cost_key(1, 101)] = 4;
+  route_cost_options.route_dispatch_cost_model.cost_by_edge
+      [route_dispatch_cost_key(2, 102)] = 40;
+  const auto route_cost_edges =
+      generate_candidate_edges(matching_batch, route_cost_options);
+  assert(route_cost_edges.size() == 2);
+  assert(route_cost_edges[0].request_id == 101);
+  assert(route_cost_edges[0].pickup_cost == 9);
+  assert(route_cost_edges[0].dispatch_cost == 4);
+  assert(route_cost_edges[1].request_id == 102);
+  assert(route_cost_edges[1].pickup_cost == 8);
+  assert(route_cost_edges[1].dispatch_cost == 40);
+
+  CandidateEdgeOptions route_pair_cost_options(2.0, 10.0);
+  route_pair_cost_options.route_dispatch_cost_model.enabled = true;
+  route_pair_cost_options.route_dispatch_cost_model.cost_by_route_pair
+      [route_pair_key(batch_drivers[0].location,
+                      batch_requests[0].pickup_location)] = 6;
+  route_pair_cost_options.route_dispatch_cost_model.cost_by_route_pair
+      [route_pair_key(batch_drivers[1].location,
+                      batch_requests[1].pickup_location)] = 7;
+  const auto route_pair_cost_edges =
+      generate_candidate_edges(matching_batch, route_pair_cost_options);
+  assert(route_pair_cost_edges.size() == 2);
+  assert(route_pair_cost_edges[0].request_id == 101);
+  assert(route_pair_cost_edges[0].pickup_cost == 9);
+  assert(route_pair_cost_edges[0].dispatch_cost == 6);
+  assert(route_pair_cost_edges[1].request_id == 102);
+  assert(route_pair_cost_edges[1].pickup_cost == 8);
+  assert(route_pair_cost_edges[1].dispatch_cost == 7);
+
+  ScanCandidateEdgeGenerator scan_generator;
+  const auto generated_candidate_result =
+      scan_generator.generate(matching_batch, CandidateEdgeOptions(2.0, 10.0));
+  assert(generated_candidate_result.edges.size() == 2);
 
   const auto candidate_result = generate_candidate_edges_with_stats(
       matching_batch, CandidateEdgeOptions(2.0, 10.0));
@@ -210,9 +270,11 @@ int main() {
   assert(normalized_edges[0].taxi_id == 1);
   assert(normalized_edges[0].request_id == 201);
   assert(normalized_edges[0].pickup_cost == 10);
+  assert(normalized_edges[0].dispatch_cost == 10);
   assert(normalized_edges[1].taxi_id == 2);
   assert(normalized_edges[1].request_id == 201);
   assert(normalized_edges[1].pickup_cost == 15);
+  assert(normalized_edges[1].dispatch_cost == 15);
 
   std::vector<CandidateEdge> greedy_edges;
   greedy_edges.emplace_back(1, 101, 50);
@@ -225,9 +287,21 @@ int main() {
   assert(greedy_assignments[0].taxi_id == 2);
   assert(greedy_assignments[0].request_id == 102);
   assert(greedy_assignments[0].pickup_cost == 10);
+  assert(greedy_assignments[0].dispatch_cost == 10);
   assert(greedy_assignments[1].taxi_id == 1);
   assert(greedy_assignments[1].request_id == 101);
   assert(greedy_assignments[1].pickup_cost == 50);
+  assert(greedy_assignments[1].dispatch_cost == 50);
+
+  std::vector<CandidateEdge> dispatch_cost_edges;
+  dispatch_cost_edges.emplace_back(1, 301, 100, 1);
+  dispatch_cost_edges.emplace_back(2, 301, 1, 50);
+  const auto dispatch_cost_assignments =
+      greedy_batch_assign(dispatch_cost_edges);
+  assert(dispatch_cost_assignments.size() == 1);
+  assert(dispatch_cost_assignments[0].taxi_id == 1);
+  assert(dispatch_cost_assignments[0].pickup_cost == 100);
+  assert(dispatch_cost_assignments[0].dispatch_cost == 1);
 
   const auto baseline_assignments =
       greedy_batch_assign(matching_batch, 2.0, 10.0);

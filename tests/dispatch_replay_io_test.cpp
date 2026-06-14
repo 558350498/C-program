@@ -18,6 +18,7 @@ int main() {
   const char *requests_path = "dispatch_replay_io_requests_test.csv";
   const char *drivers_path = "dispatch_replay_io_drivers_test.csv";
   const char *bad_requests_path = "dispatch_replay_io_bad_requests_test.csv";
+  const char *route_costs_path = "dispatch_replay_io_route_costs_test.csv";
 
   write_file(requests_path,
              "request_id,customer_id,request_time,pickup_x,pickup_y,"
@@ -47,6 +48,28 @@ int main() {
   assert(driver_result.drivers[1].taxi_id == 2);
   assert(driver_result.drivers[1].status == TaxiStatus::offline);
 
+  write_file(route_costs_path,
+             "taxi_id,request_id,leg_type,route_status,route_duration_s,"
+             "dispatch_cost,start_lon,start_lat,end_lon,end_lat\n"
+             "1,101,dispatch_to_pickup,routed,42.4,999,0,0,3,4\n"
+             "1,101,trip,routed,99,99,0,0,3,4\n"
+             "2,102,dispatch_to_pickup,fallback,12,12,5,0,10,0\n"
+             "2,102,dispatch_to_pickup,routed,18,999,5,0,10,0\n");
+  const auto route_cost_result =
+      load_route_dispatch_costs_csv(route_costs_path);
+  assert(route_cost_result.ok());
+  assert(route_cost_result.model.enabled);
+  assert(route_cost_result.loaded_rows == 2);
+  assert(route_cost_result.skipped_rows == 2);
+  assert(route_cost_result.model.cost_by_edge.at(
+             route_dispatch_cost_key(1, 101)) == 42);
+  assert(route_cost_result.model.cost_by_edge.at(
+             route_dispatch_cost_key(2, 102)) == 18);
+  assert(route_cost_result.model.cost_by_route_pair.at(
+             route_pair_key(0.0, 0.0, 3.0, 4.0)) == 42);
+  assert(route_cost_result.model.cost_by_route_pair.at(
+             route_pair_key(5.0, 0.0, 10.0, 0.0)) == 18);
+
   DispatchReplaySimulator simulator;
   const DispatchReplayOptions options(
       0, 720, 30, 600, CandidateEdgeOptions(10.0, 10.0, 0, false));
@@ -72,6 +95,7 @@ int main() {
   std::remove(requests_path);
   std::remove(drivers_path);
   std::remove(bad_requests_path);
+  std::remove(route_costs_path);
 
   return 0;
 }

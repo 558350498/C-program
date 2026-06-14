@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -109,6 +111,21 @@ double parse_double(const CsvRow &row, const std::string &name) {
     throw std::runtime_error("invalid double " + name);
   }
   return value;
+}
+
+bool has_value(const CsvRow &row, const std::string &name) {
+  const auto it = row.find(name);
+  return it != row.end() && !it->second.empty();
+}
+
+double parse_first_available_double(const CsvRow &row,
+                                    const std::vector<std::string> &names) {
+  for (const auto &name : names) {
+    if (has_value(row, name)) {
+      return parse_double(row, name);
+    }
+  }
+  throw std::runtime_error("missing route cost column");
 }
 
 TaxiStatus parse_status(const CsvRow &row) {
@@ -255,3 +272,69 @@ DriverSnapshotCsvLoadResult load_driver_snapshots_csv(const std::string &path) {
   return result;
 }
 
+RouteDispatchCostCsvLoadResult
+load_route_dispatch_costs_csv(const std::string &path) {
+  RouteDispatchCostCsvLoadResult result;
+  std::ifstream file(path);
+  if (!file) {
+    result.errors.push_back("cannot open " + path);
+    return result;
+  }
+
+  const std::vector<std::string> header = read_header(file, result.errors);
+  if (header.empty()) {
+    return result;
+  }
+
+  std::string line;
+  std::size_t row_number = 1;
+  while (std::getline(file, line)) {
+    ++row_number;
+    if (trim(line).empty()) {
+      continue;
+    }
+
+    try {
+      const CsvRow row = make_row(header, split_csv_line(line));
+      if (has_value(row, "leg_type") &&
+          normalize_header(row.at("leg_type")) != "dispatch_to_pickup") {
+        ++result.skipped_rows;
+        continue;
+      }
+      if (has_value(row, "route_status") &&
+          normalize_header(row.at("route_status")) != "routed") {
+        ++result.skipped_rows;
+        continue;
+      }
+
+      const int taxi_id = parse_int(row, "taxi_id");
+      const int request_id = parse_int(row, "request_id");
+      const double raw_cost = parse_first_available_double(
+          row, {"route_cost", "route_duration_s", "duration_s",
+                "dispatch_cost"});
+      if (!std::isfinite(raw_cost) || raw_cost < 0.0 ||
+          raw_cost >
+              static_cast<double>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid route cost value");
+      }
+
+      result.model.cost_by_edge[route_dispatch_cost_key(taxi_id,
+                                                        request_id)] =
+          static_cast<int>(std::llround(raw_cost));
+      if (has_value(row, "start_lon") && has_value(row, "start_lat") &&
+          has_value(row, "end_lon") && has_value(row, "end_lat")) {
+        result.model.cost_by_route_pair[route_pair_key(
+            parse_double(row, "start_lon"), parse_double(row, "start_lat"),
+            parse_double(row, "end_lon"), parse_double(row, "end_lat"))] =
+            static_cast<int>(std::llround(raw_cost));
+      }
+      ++result.loaded_rows;
+    } catch (const std::exception &error) {
+      result.errors.push_back(row_error(row_number, error.what()));
+    }
+  }
+
+  result.model.enabled = !result.model.cost_by_edge.empty() ||
+                         !result.model.cost_by_route_pair.empty();
+  return result;
+}

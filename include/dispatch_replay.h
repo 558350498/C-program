@@ -17,12 +17,13 @@ struct DispatchReplayOptions {
   CandidateEdgeOptions candidate_options;
   bool use_indexed_candidate_edges;
   bool taxi_system_logging_enabled;
+  bool record_candidate_routes;
 
   DispatchReplayOptions()
       : start_time(0), end_time(0), batch_interval_seconds(30),
         trip_duration_seconds(600), candidate_options(),
-        use_indexed_candidate_edges(false),
-        taxi_system_logging_enabled(false) {}
+        use_indexed_candidate_edges(false), taxi_system_logging_enabled(false),
+        record_candidate_routes(false) {}
 
   DispatchReplayOptions(TimeSeconds start_time_value,
                         TimeSeconds end_time_value,
@@ -30,13 +31,15 @@ struct DispatchReplayOptions {
                         TimeSeconds trip_duration_seconds_value,
                         const CandidateEdgeOptions &candidate_options_value,
                         bool use_indexed_candidate_edges_value = false,
-                        bool taxi_system_logging_enabled_value = false)
+                        bool taxi_system_logging_enabled_value = false,
+                        bool record_candidate_routes_value = false)
       : start_time(start_time_value), end_time(end_time_value),
         batch_interval_seconds(batch_interval_seconds_value),
         trip_duration_seconds(trip_duration_seconds_value),
         candidate_options(candidate_options_value),
         use_indexed_candidate_edges(use_indexed_candidate_edges_value),
-        taxi_system_logging_enabled(taxi_system_logging_enabled_value) {}
+        taxi_system_logging_enabled(taxi_system_logging_enabled_value),
+        record_candidate_routes(record_candidate_routes_value) {}
 };
 
 struct DispatchReplayMetrics {
@@ -136,10 +139,40 @@ struct DispatchReplayRequestOutcome {
         completion_time(0), wait_time(0), pickup_cost(0) {}
 };
 
+struct DispatchReplayCandidateRoute {
+  TimeSeconds batch_time;
+  int taxi_id;
+  int request_id;
+  double start_lon;
+  double start_lat;
+  double end_lon;
+  double end_lat;
+  int pickup_cost;
+  int dispatch_cost;
+
+  DispatchReplayCandidateRoute()
+      : batch_time(0), taxi_id(-1), request_id(-1), start_lon(0.0),
+        start_lat(0.0), end_lon(0.0), end_lat(0.0), pickup_cost(0),
+        dispatch_cost(0) {}
+
+  DispatchReplayCandidateRoute(TimeSeconds batch_time_value,
+                               int taxi_id_value, int request_id_value,
+                               double start_lon_value,
+                               double start_lat_value, double end_lon_value,
+                               double end_lat_value, int pickup_cost_value,
+                               int dispatch_cost_value)
+      : batch_time(batch_time_value), taxi_id(taxi_id_value),
+        request_id(request_id_value), start_lon(start_lon_value),
+        start_lat(start_lat_value), end_lon(end_lon_value),
+        end_lat(end_lat_value), pickup_cost(pickup_cost_value),
+        dispatch_cost(dispatch_cost_value) {}
+};
+
 struct DispatchReplayReport {
   DispatchReplayMetrics metrics;
   std::vector<DispatchReplayBatchLog> batch_logs;
   std::vector<DispatchReplayRequestOutcome> request_outcomes;
+  std::vector<DispatchReplayCandidateRoute> candidate_routes;
 };
 
 class DispatchReplaySimulator {
@@ -174,3 +207,5 @@ std::string
 format_dispatch_replay_batch_logs_csv(const DispatchReplayReport &report);
 std::string
 format_dispatch_replay_request_outcomes_csv(const DispatchReplayReport &report);
+std::string
+format_dispatch_replay_candidate_routes_csv(const DispatchReplayReport &report);
