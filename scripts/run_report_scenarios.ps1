@@ -1,5 +1,5 @@
 param(
-  [string]$CMakePath = "C:\Users\33625\cmake\cmake-4.3.2-windows-x86_64\bin\cmake.exe",
+  [string]$CMakePath = "",
   [string]$BuildDir = "build-mingw",
   [string]$OutputDir = "build-local\report-scenarios",
   [string]$Requests = "data\normalized\requests.csv",
@@ -28,6 +28,31 @@ function Resolve-RepoPath([string]$PathText) {
     return $PathText
   }
   return Join-Path (Get-Location).Path $PathText
+}
+
+function Resolve-CMakePath([string]$RequestedPath) {
+  if ($RequestedPath -ne "") {
+    if (-not (Test-Path -LiteralPath $RequestedPath)) {
+      throw "CMakePath does not exist: $RequestedPath"
+    }
+    return (Resolve-Path -LiteralPath $RequestedPath).Path
+  }
+
+  $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+  if ($null -ne $cmake) {
+    return $cmake.Source
+  }
+
+  $fallbacks = @(
+    "C:\Users\33625\cmake\cmake-4.3.2-windows-x86_64\bin\cmake.exe"
+  )
+  foreach ($fallback in $fallbacks) {
+    if (Test-Path -LiteralPath $fallback) {
+      return $fallback
+    }
+  }
+
+  throw "cmake not found. Install CMake, add it to PATH, or pass -CMakePath."
 }
 
 function Invoke-CheckedCommand {
@@ -66,12 +91,13 @@ New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 $buildPath = Resolve-RepoPath $BuildDir
 $requestsPath = Resolve-RepoPath $Requests
 $driversPath = Resolve-RepoPath $Drivers
+$cmakeExe = Resolve-CMakePath $CMakePath
 
-& $CMakePath -S $repoRoot -B $buildPath -G "MinGW Makefiles" | Out-Host
+& $cmakeExe -S $repoRoot -B $buildPath -G "MinGW Makefiles" | Out-Host
 if ($LASTEXITCODE -ne 0) {
   throw "CMake configure failed"
 }
-& $CMakePath --build $buildPath --target replay_csv_demo k_sweep | Out-Host
+& $cmakeExe --build $buildPath --target replay_csv_demo k_sweep | Out-Host
 if ($LASTEXITCODE -ne 0) {
   throw "CMake build failed"
 }

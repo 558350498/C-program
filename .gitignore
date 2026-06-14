@@ -1,3 +1,11 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Native build products
 *.exe
 *.o
 *.obj
@@ -10,56 +18,8 @@
 *.ilk
 *.exp
 *.log
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-desktop.ini
-*.docx
-*.doc
-*.rtf
-*.pptx
-*.ppt
-*.xlsx
-*.xls
-*.pdf
-*.zip
-~$*
-*.tmp
-*.temp
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-web/map_viewer/dist/
-web/map_viewer/.vite/
-web/map_viewer/public/data/*.geojson
-web/map_viewer/public/data/replay/
-web/map_viewer/public/data/*.json
-web/map_viewer/public/data/*.csv
 
-# Python / Go / JS local caches.
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.mypy_cache/
-coverage.out
-*.test
-
-# Project-private notes / local documents.
-debug_analysis.md
-implementation_plan.md
-index_.md
-docs/ppt_prompt.md
-*_draft.md
-*_prompt.md
-*_notes.md
-*_内容.txt
-数据结构课程设计选题说明表_内容.txt
-compile_flags.txt
-
-# Build outputs.
+# CMake build directories and generated metadata
 build/
 build-*/
 build-cmake/
@@ -72,13 +32,52 @@ Testing/
 cmake_install.cmake
 CTestTestfile.cmake
 DartConfiguration.tcl
+compile_flags.txt
+
+# One-off local executable names from experiments
 build_*.exe
 compat_*.exe
 pulled_baseline.exe
 taxi_pull_baseline.exe
 taxi_test_build.exe
 
-# Local datasets and generated normalized data.
+# Office, archive, and temporary handoff files
+*.docx
+*.doc
+*.rtf
+*.pptx
+*.ppt
+*.xlsx
+*.xls
+*.pdf
+*.zip
+~$*
+*.tmp
+*.temp
+
+# Frontend dependencies and generated viewer artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+web/map_viewer/dist/
+web/map_viewer/.vite/
+web/map_viewer/public/data/*.csv
+web/map_viewer/public/data/*.geojson
+web/map_viewer/public/data/*.json
+web/map_viewer/public/data/replay/
+!web/map_viewer/public/data/.gitkeep
+
+# Python, Go, and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+coverage.out
+*.test
+
+# Local datasets. Keep only docs, placeholders, and small replay samples.
 data/datasets/**
 data/normalized/**
 data/osm/**
@@ -89,3 +88,16 @@ data/osm/**
 !data/datasets/nyc-taxi-trip-duration/raw/.gitkeep
 !data/normalized/
 !data/normalized/README.md
+!data/normalized/requests.csv
+!data/normalized/drivers.csv
+
+# Project-private notes and generated local drafts
+debug_analysis.md
+implementation_plan.md
+index_.md
+docs/ppt_prompt.md
+*_draft.md
+*_prompt.md
+*_notes.md
+*_内容.txt
+数据结构课程设计选题说明表_内容.txt

@@ -1,4 +1,5 @@
 param(
+  [string]$CMakePath = "",
   [string]$BuildDir = "build-local",
   [string]$ReportOutputDir = "build-local\pre-submit-report-scenarios",
   [int]$EndTime = 120,
@@ -13,11 +14,37 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
+$resolvedCMakePath = $null
 
 function Invoke-Step([string]$Name, [scriptblock]$Body) {
   Write-Host ""
   Write-Host "==> $Name"
   & $Body
+}
+
+function Resolve-CMakePath([string]$RequestedPath) {
+  if ($RequestedPath -ne "") {
+    if (-not (Test-Path -LiteralPath $RequestedPath)) {
+      throw "CMakePath does not exist: $RequestedPath"
+    }
+    return (Resolve-Path -LiteralPath $RequestedPath).Path
+  }
+
+  $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+  if ($null -ne $cmake) {
+    return $cmake.Source
+  }
+
+  $fallbacks = @(
+    "C:\Users\33625\cmake\cmake-4.3.2-windows-x86_64\bin\cmake.exe"
+  )
+  foreach ($fallback in $fallbacks) {
+    if (Test-Path -LiteralPath $fallback) {
+      return $fallback
+    }
+  }
+
+  return $null
 }
 
 function Invoke-CppTests([string]$ResolvedBuildDir) {
@@ -58,19 +85,20 @@ Invoke-Step "Project doctor" {
 }
 
 if (-not $SkipBuild) {
-  $cmake = Get-Command cmake -ErrorAction SilentlyContinue
-  if ($null -ne $cmake) {
+  $resolvedCMakePath = Resolve-CMakePath $CMakePath
+  if ($null -ne $resolvedCMakePath) {
+    Write-Host "using cmake: $resolvedCMakePath"
     Invoke-Step "Configure C++ build" {
-      cmake -S . -B $BuildDir -G "MinGW Makefiles"
+      & $resolvedCMakePath -S . -B $BuildDir -G "MinGW Makefiles"
     }
 
     Invoke-Step "Build C++ targets" {
-      cmake --build $BuildDir
+      & $resolvedCMakePath --build $BuildDir
     }
   } elseif (Test-Path -LiteralPath $BuildDir) {
     Write-Host "cmake not found; reusing existing build directory: $BuildDir"
   } else {
-    throw "cmake not found and build directory does not exist: $BuildDir"
+    throw "cmake not found. Install CMake, add it to PATH, or pass -CMakePath; build directory does not exist: $BuildDir"
   }
 } else {
   Write-Host "Skipping build"
@@ -88,6 +116,7 @@ if (-not $SkipReportScenarios) {
   Invoke-Step "Generate report scenario evidence" {
     powershell -ExecutionPolicy Bypass `
       -File scripts\run_report_scenarios.ps1 `
+      -CMakePath $resolvedCMakePath `
       -BuildDir $BuildDir `
       -OutputDir $ReportOutputDir `
       -EndTime $EndTime `
