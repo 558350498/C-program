@@ -1,300 +1,87 @@
-# 出租车调度系统建模笔记
+# System Modeling
 
-这份文档只记录稳定设计边界和建模原则。函数位置看 `INDEX.md`，事件推进看 `docs/timeline_model.md`，当前任务看 `plan/dispatch_next_steps.md`。
+This document keeps the stable architecture boundaries. File/module lookup
+lives in `INDEX.md`; current status lives in `PROJECT_STATUS.md`; terminology
+lives in `docs/glossary.md`.
 
-## 1. 当前架构边界
+## Layer Boundaries
 
-项目分成五层：
+| Layer | Owns | Must not own |
+|---|---|---|
+| Go preprocess | Raw CSV drift, field cleanup, normalized request/driver CSVs | C++ replay state |
+| C++ core | Request lifecycle, taxi state, candidate edges, greedy/MCMF matching, replay metrics | Kaggle raw schema, viewer state |
+| Go experiment/export tools | Batch sweeps, summaries, GeoJSON, replay artifacts, route-cost CSV generation | Online dispatch behavior |
+| Viewer | Static explanation of replay artifacts | Replay execution, assignment writes, cost calculation |
+| Docs/scripts | Reproducible evidence and handoff guidance | Generated build/report outputs |
 
-1. 数据预处理层
-   - Go 读取 Kaggle raw CSV。
-   - Go 负责字段适配、时间解析、坐标过滤、tile 映射、合成司机。
-   - 输出标准化 `requests.csv` / `drivers.csv`。
-
-2. 标准化输入层
-   - C++ 只读取项目内部标准化 CSV。
-   - `dispatch_replay_io` 把 CSV 转成 `PassengerRequest` / `DriverSnapshot`。
-   - C++ 不依赖 Kaggle 原始字段名。
-
-3. 调度核心层
-   - `TaxiSystem` 维护 taxi 状态、空间索引同步和 request 生命周期回写。
-   - `RequestContext` 管单个 request 状态。
-   - `dispatch_batch` 生成候选边和贪心 baseline。
-   - `McmfBatchStrategy` 只在候选边集合上做匹配。
-   - `ISpatialIndex` 只负责空间查询，业务数据通过 side table 挂载。
-   - `TileGridStats` 负责轻量区域 side table：pickup/dropoff heat、初始可用司机数、hotspot/cold score；可用 `--cell-stats-grid-cols` 从 `SimpleTileCellIndex` 重编码输入。
-   - `TileRegionMap` 负责离线 region 审计：从 tile stats 构建受约束 UF region，不参与 dispatch。
-
-4. 离线回放层
-   - `DispatchReplaySimulator` 负责事件时间线。
-   - replay 使用 MCMF 结果正式回写，greedy 用作对比指标。
-   - replay 输出总指标、每轮 batch 日志和 per-request outcome。
-   - `k_sweep` 基于 replay outcome 做每个实验 row 的 hot/cold dropoff 分组报告。
-   - `go_batch_experiments` 可按 `tile-grid-cols` 跑 100/200/400 多分辨率对照。
-
-5. 静态展示层
-   - `tools/geojson_export` 把离线 CSV 产物转成 GeoJSON 文件。
-   - `tools/replay_visual_export` 把 replay CSV 产物转成 live / batch 展示 artifact。
-   - `tools/route_visual_export` 消费 live path artifact 或 candidate route pair CSV，通过本地 OSRM-compatible router 生成真实道路 polyline artifact 或 route-cost CSV side table；candidate pair 模式会按起终点去重，并可用 `--route-cache-csv` 持久缓存。
-   - `web/map_viewer` 通过 Vite 静态文件服务加载 `/data/tile_stats.geojson`，用 MapLibre 渲染 tile 方格。
-   - 可选 `tile_corner_witnesses.geojson` 从 normalized `requests.csv` 抽取每个 tile 四角最近 pickup 点，只用于 hover 审计。
-   - live replay 优先加载 `replay_live_routes.geojson`，沿 polyline 累计长度插值 taxi 位置；若 route artifact 不存在或单段失败，则回退到虚空行走线。
-   - viewer 可选加载在线 OSM raster 底图作为开发展示参考；底图不进入 replay、dispatch、MCMF cost 或 CSV schema。
-   - 这一层仍然是文件边界，不是后端 API 边界；不触发 replay、dispatch 或 pricing。
-
-## 2. 数据流
-
-当前主线数据流：
+Main data flow:
 
 ```text
-Kaggle NYC.csv
-  -> Go preprocess
-  -> data/normalized/requests.csv
-  -> data/normalized/drivers.csv
-  -> C++ dispatch_replay_io
-  -> DispatchReplaySimulator
-  -> candidate edges
-  -> greedy / MCMF
-  -> TaxiSystem::apply_assignment
-  -> replay report / request outcomes
-  -> k_sweep hot/cold grouped metrics
-  -> tools/geojson_export
-  -> tools/replay_visual_export
-  -> tools/route_visual_export
-  -> web/map_viewer static MapLibre view
+raw CSV
+-> tools/go_csv_preprocess
+-> data/normalized/requests.csv + drivers.csv
+-> replay_csv_demo / k_sweep
+-> batch logs + request outcomes + summaries
+-> export tools
+-> web/map_viewer static artifacts
 ```
 
-边界原则：
+## Dispatch Facts
 
-- Go 处理变化频繁的 raw schema 和清洗策略。
-- C++ 处理稳定的调度状态机、候选边、匹配算法和回放指标。
-- 两边通过文件交互，不用 cgo，不传 C++ 对象或 STL 容器。
-- Go 可以继续补充业务估算列，但不同策略下的服务效果以 C++ replay outcome 为事实源。
-- 前端第一阶段只读取静态 JSON / GeoJSON 文件，不通过 HTTP API 调用 Go/C++ 工具；浏览器里的 `fetch("/data/...")` 只是 Vite 的本地静态文件服务。
-- corner witness 点只解释 tile 中真实 pickup 分布，不裁剪 tile polygon，也不参与候选生成或匹配。
-- CellIndex stats 和 route polyline 都默认不改变 replay；只有显式 `--cell-stats-grid-cols` / `--route-cost-csv` / `--dispatch-opportunity-cost-scale` 才进入 `dispatch_cost`，但不改变 `pickup_cost` 或订单完成时间。
+C++ replay is the source of truth for:
 
-## 3. 虚空行走模型
+- request arrival, dispatch, pickup, completion, and unserved outcomes
+- taxi occupied/free transitions
+- `pickup_cost`, wait time, and completion timing
+- greedy and MCMF comparison metrics
+- per-request outcome rows used by reports and viewer exports
 
-调度核心默认仍然使用虚空行走模型。真实道路 polyline 是展示 artifact；真实道路 duration 只有通过显式 route-cost CSV 才能进入 `dispatch_cost`。
+Route artifacts, raster maps, sampled-order explanations, and front-end
+highlighting explain these facts. They do not redefine them.
 
-规则：
+## Candidate And Matching Boundary
 
-- `Point(x, y)` 直接使用经纬度或二维坐标。
-- 候选边 `pickup_cost` 表示接驾耗时。
-- taxi 被派单后进入 `occupy`。
-- 到达 pickup event 后 request 进入 `serving`。
-- trip complete event 时，taxi 位置直接更新到 `dropoff_location`。
-- 未匹配 request 留到后续 batch。
+Candidate generation builds taxi/request edges from available drivers and
+pending requests. The default path is still `scan + finite k`; indexed paths are
+comparison and future optimization paths.
 
-这个模型的目的不是还原真实交通，而是验证：
+MCMF optimizes `dispatch_cost`. Replay timing applies `pickup_cost`. See
+`docs/glossary.md` for the cost split.
 
-- request 生命周期闭环
-- taxi 占用和释放
-- 候选边生成
-- greedy / MCMF 对比
-- replay 指标输出
+Do not silently add:
 
-## 4. 候选边和匹配建模
+- all-pairs city-scale bipartite graphs
+- live routing calls inside replay
+- unbounded candidates as a default experiment
+- region map as a hard dispatch boundary
 
-候选边含义：
+## Spatial Boundary
 
-```text
-taxi_id -> request_id, pickup_cost
-```
+`simpleTile(grid_cols)` is the current baseline spatial bucket. `CellIndex` is
+the abstraction for future multi-resolution cells.
 
-生成约束：
+Allowed spatial inputs to matching:
 
-- 只使用可用司机。
-- 只使用已到达 batch 时间的 request。
-- 支持半径筛选。
-- 支持 `same_tile_only` 粗筛。
-- 支持每个 request 的 top-k 限制。
-- 候选边会规范化：过滤非法边，并对重复 `taxi_id/request_id` 保留最低 cost。
+- `--cell-stats-grid-cols` to re-encode stats through `SimpleTileCellIndex`
+- neighbor smoothing and parent fallback to adjust hotspot scores
+- explicit `--route-cost-csv` to feed route duration into `dispatch_cost`
 
-当前有两条候选边生成路径：
+Not allowed:
 
-- 全量扫描路径：作为默认 replay 路径和 baseline。
-- indexed 对照路径：使用 KD-Tree `radius_query` 查询候选司机 id，再通过 `taxi_id -> DriverSnapshot` side table 取业务数据。
+- route ETA rewriting `pickup_cost`
+- OSM/MapLibre display layers defining region facts
+- H3 replacing replay directly without an adapter path
 
-当前默认策略是 `scan + finite k`。indexed 路径暂不替换默认 replay，先用于验证空间索引抽象和后续性能优化。当前 indexed replay 已经跨 batch 维护 free-driver KD-Tree，不再每轮临时重建整棵树；但在当前样本和候选规模下，scan 仍然更简单、更快。`unlimited` 候选集只作为理论上界和压力测试，不作为常规实验默认值。若打开 `--cell-stats-grid-cols`，候选边仍由同一规则生成，但 request/driver tile id 与 heat side table 来自 `SimpleTileCellIndex` cell。
+## Viewer Boundary
 
-replay outcome 记录每个 request 在当前策略下的服务结果：
+`web/map_viewer` is a static explanation surface. It can load JSON/GeoJSON,
+animate replay artifacts, display route polylines, and show sampled-order
+explanations.
 
-- 是否进入过 pending batch。
-- 候选边覆盖次数和候选边数量。
-- 是否成功派单。
-- 是否完成。
-- 实际接驾成本和派单等待时间。
+It must not:
 
-这些字段用于把全局 replay 指标拆成 per-row 分组指标，例如 hot dropoff / cold dropoff 的完成率、候选边覆盖率和接驾成本。
-
-MCMF 第一版：
-
-```text
-source -> taxi -> request -> sink
-```
-
-- 每辆 taxi 容量 1。
-- 每个 request 容量 1。
-- taxi-request 边费用是 `pickup_cost`。
-- 先最大化匹配数量，再最小化总代价。
-
-暂不建模：
-
-- 未服务惩罚
-- 等待时间修正
-- 真实道路 ETA
-- 司机收益
-- 重定位收益
-
-## 5. Tile 建模
-
-当前 tile 是简单固定网格，用作统计、审计和可选粗筛。
-
-定位：
-
-- tile 不是为了替代 KD-Tree。
-- tile 是第一层候选集合压缩。
-- KD-Tree 或距离计算可作为细筛。
-
-推荐方向：
-
-```text
-tile bucket -> 候选车辆集合 -> 距离/cost -> 匹配策略
-```
-
-空间索引抽象原则：
-
-- KD-Tree、grid index、tile bucket 都应隐藏在 `ISpatialIndex` 或候选生成器之后。
-- 空间索引返回轻量 `id + distance_sq` 查询结果。
-- taxi、request、heat 等业务字段放在外部 side table。
-- 后续热区统计和格点地图不应直接把业务对象塞进 KD-Tree node。
-- 下一阶段优先做轻量 tile/grid side table，而不是完整道路级格点地图。tile/grid 先服务于热区统计、冷区识别、机会成本和候选粗筛；真实路网、路径规划和拥堵传播继续后置。
-- region / zone 是 tile 之上的慢变解释层，具体边界见 `docs/region_design.md`。当前 `tile_region_map` 已提供受约束离线 UF 原型，但不把 region 作为派单硬边界，也不每个 batch 动态重划。
-- 当前 `simpleTile(grid_cols)` 是项目 baseline。它已经支持 100/200/400 多分辨率实验，优先用于验证区域尺度和热区稳定性。
-- H3 是后续可选升级，不是当前依赖。当前已先抽象 `CellIndex`，并让 `SimpleTileCellIndex` 通过 `--cell-stats-grid-cols` 进入统计和调配成本；H3 应作为第二个 adapter。
-- 地图瓦片和真实路由中间件属于展示层或路网层，不应反向污染当前 replay / dispatch 建模。当前在线 raster 底图只是前端开发参考层，不是系统建模依赖。
-
-当前热区原型使用 pickup tile 频次作为轻量 heat side table：
-
-```text
-dropoff_hotspot = pickup_heat(dropoff_tile) / max_pickup_heat
-cold_dropoff = 1 - dropoff_hotspot
-```
-
-当前 C++ 侧已经把这部分沉淀为 `TileGridStats`，并由 `k_sweep` 复用。第一版 tile/grid 明细包含：
-
-```text
-tile_id
-pickup_count
-dropoff_count
-available_driver_count
-hotspot_score
-cold_score
-```
-
-`k_sweep` 对每个策略 row 输出 hot/cold dropoff 分组效果：
-
-- 请求数
-- 候选边覆盖率
-- 派单率
-- 完成率
-- 平均订单距离
-- 平均接驾成本
-
-第一版机会成本只做报表估算，不写入 dispatch 权重：
-
-```text
-opportunity_adjustment =
-  cold_dropoff_penalty * cold_dropoff
-  - hot_dropoff_discount * dropoff_hotspot
-```
-
-## 6. 当前不建议做
-
-当前阶段不要做：
-
-- 全纽约全量完全二分图。
-- 把真实道路最短路 / ETA 写进 `pickup_cost`，或在 replay loop 内做实时 routing HTTP 调用。
-- API / Socket / WebSocket 在线服务。
-- 多线程事件处理。
-- Redis 或外部数据库。
-- cgo / C++ dll。
-- 把 Kaggle raw 字段耦合进 C++ 核心。
-- Tarjan / SCC 区域缩点。
-- 将 UF region map 接入派单硬边界或 MCMF cost。
-
-这些都可以以后做，但不应该阻塞当前离线 replay 主线。
-
-## 7. 设计原则
-
-- 先文件边界，后服务边界。
-- 先小样本闭环，后大数据规模。
-- 先可解释指标，后复杂优化。
-- 变化频繁的 schema 放 Go。
-- 稳定的状态机和算法放 C++。
-- 策略只输出 `Assignment`，状态回写统一走 `TaxiSystem`。
-
-## 8. Replay visualization boundary
-
-`tools/replay_visual_export` 属于静态展示层。它读取 `requests.csv`、`drivers.csv`、`request_outcomes.csv` 和 `batch_logs.csv`，输出 `web/map_viewer/public/data/replay/` 下的 JSON/GeoJSON artifact。
-
-边界约定：
-
-- exporter 不触发 replay 重新计算。
-- exporter 不修改 C++ dispatch、MCMF cost、TaxiSystem 或 request 生命周期。
-- live mode 只为小样本生成虚空行走路径，用来解释接客和落客过程。
-- batch mode 只为大样本生成 batch 聚合时间线和窗口化 tile activity overlay，用来保证浏览器可读性和性能。
-- `replay_batch_tiles.json` 是展示聚合层：它把当前窗口的 pickup、assigned、completed 事件按 tile 汇总，不参与 dispatch、候选边生成或 cost 计算。
-- 这仍然是文件式展示边界，不是 HTTP API、WebSocket、Redis 或在线位置服务边界。
-
-## 9. Visual routing boundary
-
-真实路网默认只进入展示层；若显式导出 route-cost CSV，则可以作为 `dispatch_cost` side table 进入调度匹配。
-
-已新增 `tools/route_visual_export`：
-
-- 输入：`replay_live_paths.geojson` 或 `replay_csv_demo --candidate-routes-csv` 生成的 candidate route pair CSV。
-- 路由源：默认本地 OSRM-compatible router，不让浏览器逐段请求在线 routing API。
-- 输出：`replay_live_routes.geojson`，保留 live path 的时间和业务 properties，把 geometry 替换为真实道路 polyline。
-- 可选输出：route-cost CSV，包含 `taxi_id,request_id,leg_type,route_status,start_lon,start_lat,end_lon,end_lat,route_duration_s,route_distance_m`；candidate route pair 模式还保留 `batch_time,pickup_cost,dispatch_cost` 审计列。
-- 失败策略：单段路由失败时保留原始虚空 LineString，并标记 `route_status=fallback`。
-
-当前本机验收状态：
-
-- Docker 容器 `osrm-nyc` 可监听 `127.0.0.1:5000`。
-- 纽约 OSM extract 已完成 `osrm-extract -> osrm-partition -> osrm-customize`。
-- 1000 单 live artifact 已重新生成路线：`1998` 条 feature 全部 `route_status=routed`，`fallback=0`。
-- 前端 Replay 面板可显示 route source、routed/fallback 数量，并沿 route polyline 插值。
-
-边界约束：
-
-- 不修改 `DispatchReplaySimulator`。
-- 不修改 `request_outcomes.csv`、`batch_logs.csv` 或 replay manifest 的事实含义。
-- 默认不修改候选边生成、MCMF cost、`pickup_cost`、完成率或派单结果；只有显式 `--route-cost-csv` 会改变 `dispatch_cost` 匹配输入。
-- 前端只把 `replay_live_routes.geojson` 当作更真实的绘制路径；时间仍以 replay artifact 的 `start_time` / `end_time` 为准。
-
-当前真实道路 dispatch 深化已有候选对 route-cost 预计算入口：先由 replay 导出有限候选对，再由 route export 去重、缓存并生成 route-cost CSV，最后喂回 `dispatch_cost`。下一步是在 OSRM 可用时生成正式 route-cost 对比报告。不能在 replay loop 内实时逐边请求路由。
-
-## 10. Map viewer explanation boundary
-
-2026-05-10 状态：`web/map_viewer` 已经从最小地图 MVP 升级为静态解释 viewer，但边界仍然保持清楚。
-
-当前 viewer 可以做：
-
-- 独立开关 tile 矩形、tile 内点和 corner witness 点。
-- 在可用 artifact 间切换 live replay 和 batch replay。
-- 在 live 模式下优先使用 `replay_live_routes.geojson`，缺失时回退到 `replay_live_paths.geojson`。
-- 在 batch 模式下用 `replay_batches.json` 展示时间线，用 `replay_batch_tiles.json` 展示窗口化 tile activity。
-- 用 `sampled_order_explanations.json` 在 Orders 抽屉中解释少量代表性订单，并展示生命周期、派单结果、hot/cold 指标和 pricing v1 分解。
-
-当前 viewer 不能做，也不应该假装做：
-
-- 不重新运行 replay。
-- 不写回 `request_outcomes.csv`、`batch_logs.csv` 或 manifest。
-- 不改变候选边、MCMF cost、接驾成本、完成率或派单结果；route-cost CSV 属于离线实验输入，不由 viewer 写回。
-- 不提供订单 CRUD、全量订单搜索、后台管理或在线实时流。
-- 不把 OSRM polyline、OSM raster basemap 或前端高亮结果反向定义为调度事实。
-
-因此，展示层可以被讲成“解释 replay 事实的仪表盘”，不是新的调度系统本体。
+- run replay
+- dispatch orders
+- write request outcome or batch log files
+- call routing services to mutate matching inputs
+- present display paths as dispatch facts

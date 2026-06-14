@@ -38,16 +38,16 @@ function Invoke-CheckedCommand {
     [string]$StderrPath
   )
 
-  $process = Start-Process `
-    -FilePath $FilePath `
-    -ArgumentList $Arguments `
-    -RedirectStandardOutput $StdoutPath `
-    -RedirectStandardError $StderrPath `
-    -Wait `
-    -PassThru `
-    -NoNewWindow
-  if ($process.ExitCode -ne 0) {
-    throw "command failed ($($process.ExitCode)): $FilePath $($Arguments -join ' ')"
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & $FilePath @Arguments 1> $StdoutPath 2> $StderrPath
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($exitCode -ne 0) {
+    throw "command failed ($exitCode): $FilePath $($Arguments -join ' ')"
   }
 }
 

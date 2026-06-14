@@ -12,6 +12,7 @@ This index is for quick navigation only. It should point to current paths and av
 | Execution plan map | [plan/README.md](./plan/README.md) |
 | Current next-step plan | [plan/dispatch_next_steps.md](./plan/dispatch_next_steps.md) |
 | Agent workflow map | [AGENTS.md](./AGENTS.md) |
+| Cost and dispatch glossary | [docs/glossary.md](./docs/glossary.md) |
 | Map viewer docs | [web/map_viewer/README.md](./web/map_viewer/README.md) |
 
 ## Stable Design Docs
@@ -20,9 +21,9 @@ This index is for quick navigation only. It should point to current paths and av
 |---|---|
 | System layer boundaries | [docs/system_modeling.md](./docs/system_modeling.md) |
 | Replay event timeline | [docs/timeline_model.md](./docs/timeline_model.md) |
+| Cost and dispatch vocabulary | [docs/glossary.md](./docs/glossary.md) |
 | Candidate, pricing, and rule strategy | [docs/algorithm_and_strategy.md](./docs/algorithm_and_strategy.md) |
 | Tile / region / heat / H3-like route | [docs/region_design.md](./docs/region_design.md) |
-| Presentation-generation input | [docs/ppt_prompt.md](./docs/ppt_prompt.md) |
 
 ## Core C++ Modules
 
@@ -63,7 +64,8 @@ This index is for quick navigation only. It should point to current paths and av
 | `scripts/prepare_map_viewer_demo.ps1` | Prepare local viewer demo artifacts |
 | `scripts/run_report_scenarios.ps1` | Generate report-ready baseline, CellIndex opportunity, and candidate-route artifacts |
 | `scripts/run_cost_grid_search.ps1` | Grid-search dispatch opportunity parameters and write ranked calibration output |
-| `scripts/project_doctor.ps1` | Check progressive-disclosure docs, legacy shim shape, and inline repo paths |
+| `scripts/project_doctor.ps1` | Check progressive-disclosure docs and inline repo paths |
+| `scripts/pre_submit_check.ps1` | One-command project doctor, C++ build/test, and report-evidence gate |
 
 ## Viewer
 
@@ -86,13 +88,17 @@ This index is for quick navigation only. It should point to current paths and av
 ## Common Commands
 
 ```powershell
-cmake -S . -B build-mingw -G "MinGW Makefiles"
-cmake --build build-mingw
-ctest --test-dir build-mingw --output-on-failure
+cmake -S . -B build-local -G "MinGW Makefiles"
+cmake --build build-local
+ctest --test-dir build-local --output-on-failure
 ```
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\project_doctor.ps1
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\pre_submit_check.ps1
 ```
 
 ```powershell

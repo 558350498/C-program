@@ -47,7 +47,7 @@ function Resolve-DocTokenPath([string]$Token, [string]$SourceFile) {
   $knownTopLevel = @(
     "data", "docs", "include", "plan", "scripts", "src", "tests", "tools", "web",
     "README.md", "PROJECT_STATUS.md", "INDEX.md", "AGENTS.md", "CMakeLists.txt",
-    "index_.md", "main.cpp", "Dockerfile"
+    "main.cpp", "Dockerfile"
   )
 
   $normalized = $firstWord.Replace("/", "\")
@@ -99,13 +99,16 @@ function Test-DocInlinePaths([string]$SourceFile) {
 
 $requiredPaths = @(
   "README.md",
+  "AGENTS.md",
   "PROJECT_STATUS.md",
   "INDEX.md",
   "docs\README.md",
   "plan\README.md",
   "plan\dispatch_next_steps.md",
-  "index_.md",
-  "scripts\run_report_scenarios.ps1"
+  "scripts\run_report_scenarios.ps1",
+  "scripts\run_cost_grid_search.ps1",
+  "scripts\pre_submit_check.ps1",
+  "docs\glossary.md"
 )
 foreach ($path in $requiredPaths) {
   Test-RepoPath $path
@@ -114,22 +117,12 @@ foreach ($path in $requiredPaths) {
 $stableDocs = @(
   "docs\system_modeling.md",
   "docs\timeline_model.md",
+  "docs\glossary.md",
   "docs\algorithm_and_strategy.md",
-  "docs\region_design.md",
-  "docs\ppt_prompt.md"
+  "docs\region_design.md"
 )
 foreach ($path in $stableDocs) {
   Test-RepoPath $path
-}
-
-$indexShim = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "index_.md")
-if ($indexShim -notmatch "Legacy Index Shim" -or $indexShim -notmatch "progressive-disclosure") {
-  Add-Failure "index_.md should remain a progressive-disclosure legacy shim"
-}
-
-$indexShimLines = (Get-Content -LiteralPath (Join-Path $repoRoot "index_.md")).Count
-if ($indexShimLines -gt 40) {
-  Add-Failure "index_.md is too long for a legacy shim: $indexShimLines lines"
 }
 
 $planLines = (Get-Content -LiteralPath (Join-Path $repoRoot "plan\dispatch_next_steps.md")).Count
@@ -139,12 +132,13 @@ if ($planLines -gt $MaxPlanLines) {
 
 $entryDocs = @(
   "README.md",
+  "AGENTS.md",
   "PROJECT_STATUS.md",
   "INDEX.md",
   "docs\README.md",
+  "docs\glossary.md",
   "plan\README.md",
-  "plan\dispatch_next_steps.md",
-  "index_.md"
+  "plan\dispatch_next_steps.md"
 )
 foreach ($doc in $entryDocs) {
   Test-DocInlinePaths $doc
@@ -159,4 +153,4 @@ if ($failures.Count -gt 0) {
 }
 
 Write-Host "project doctor passed"
-Write-Host "checked entry docs, stable docs, legacy shim, and inline repo paths"
+Write-Host "checked entry docs, stable docs, and inline repo paths"

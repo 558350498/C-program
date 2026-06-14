@@ -1,425 +1,92 @@
-# Algorithm and Strategy
+# Algorithm And Strategy
 
-这份文档记录当前阶段的非机器学习调度与调价思路。目标不是训练一个黑盒模型，而是用离线回放、候选边、供需张力、区域热度和机会成本构造一套可解释的规则算法。
+This document records stable non-ML dispatch and pricing rules. Current smoke
+numbers belong in `PROJECT_STATUS.md`; terms belong in `docs/glossary.md`.
 
-## 1. 基本定位
+## Candidate Strategy
 
-当前项目的核心原则：
+Default candidate generation is `scan + finite k`.
 
-- 不使用机器学习预测价格。
-- 不训练模型，不引入神经网络、回归器或黑盒参数。
-- 使用历史订单做离线 replay，观察不同规则参数下的调度效果。
-- 用规则、约束和可解释指标调整候选集规模、接单成本和价格因子。
+| Mode | Role |
+|---|---|
+| `scan` | Default baseline; simple and stable for the homework dataset |
+| `indexed` | Correctness/performance comparison path for spatial-index work |
+| `unlimited` | Stress/theory upper bound only |
 
-可以称为：
+Candidate edges are valid only when:
+
+- the taxi is available
+- the request is pending in the current batch
+- the taxi/request pair passes radius and optional same-tile filters
+- duplicate taxi/request edges are normalized to the lowest cost
+- each request respects the configured top-k limit unless explicitly using the
+  stress path
+
+## Matching Strategy
+
+Greedy and MCMF consume the same candidate edge set.
+
+MCMF graph:
 
 ```text
-基于离线回放的非机器学习调度与调价策略
+source -> taxi -> request -> sink
 ```
 
-或：
+The strategy is to maximize assignment count, then minimize total
+`dispatch_cost`. The chosen assignments are applied through `TaxiSystem`, so
+state mutation stays centralized.
+
+## Cost Split
+
+The project keeps two costs separate:
 
 ```text
-offline replay-based rule tuning
+pickup_cost   = replay timing fact
+dispatch_cost = matching objective
 ```
 
-## 2. Top-k 候选集策略
-
-在 batch dispatch 中，每个 request 可以保留最多 k 个候选司机：
+Default:
 
 ```text
-CandidateEdgeOptions.max_edges_per_request = k
+dispatch_cost == pickup_cost
 ```
 
-k 的作用不是直接影响价格，而是影响匹配空间：
-
-- k 小：候选边少，MCMF 计算快，但可能错过更优匹配。
-- k 大：候选边多，匹配更充分，但计算成本上升，边可能冗余。
-- k 无限：理论空间最大，但不一定带来更高完成率。
-- 当前实验口径中，`unlimited` 只作为理论上界和压力测试，不作为默认策略。它会让候选边数量急剧膨胀，进而拖慢排序、greedy baseline、MCMF 和 per-request 统计。
-
-建议用离线 replay 扫描：
+Optional extension:
 
 ```text
-k = 1, 2, 3, 5, 8, 10
-```
+base = route_cost_csv duration if present
+       otherwise pickup_cost
 
-需要观察上界时再额外跑：
-
-```text
-k = unlimited
-```
-
-观察指标：
-
-- completion_rate
-- assignment_rate
-- unserved_requests
-- candidate_edges_total
-- requests_without_edges_total
-- mcmf_cost_total
-- average_pickup_cost
-
-选择规则：
-
-```text
-在完成率达到目标阈值的前提下，选择候选边数量较少、平均接驾成本较低的 k。
-```
-
-例如：
-
-```text
-completion_rate >= 98%
-candidate_edges 尽量少
-average_pickup_cost 尽量低
-```
-
-这属于参数搜索和规则校准，不属于机器学习。
-
-当前默认推荐：
-
-```text
-scan + finite k
-```
-
-原因：
-
-- `scan` 在当前样本规模下已经足够快，且实现简单稳定。
-- `finite k` 能抑制候选边膨胀，避免把计算成本浪费在冗余边上。
-- `indexed` 保留为侧表化空间索引对照路径，用于后续替换候选生成器或接入格点 / tile bucket。
-- `unlimited` 只用于证明“更大候选空间”的上界收益和计算代价，不作为常规实验默认值。
-
-当前成本已经拆成两层：
-
-```text
-pickup_cost   = replay 时间线事实，用来安排 pickup_arrival
-dispatch_cost = 匹配优化成本，用来排序 greedy / MCMF
-```
-
-默认情况下 `dispatch_cost == pickup_cost`。打开 `--cell-stats-grid-cols` 后，request / driver 的 tile id 会先由 `SimpleTileCellIndex.encode(lon, lat)` 重算，heat/cold side table 就来自 CellIndex cell。打开 `--route-cost-csv` 后，路网 route duration 可以作为匹配成本 side table 进入 `dispatch_cost`；打开 `--dispatch-opportunity-cost-scale` 后，CellIndex/tile heat-cold 的 opportunity adjustment 会叠加进入 `dispatch_cost`，从而参与调配；但它们都不改变 taxi 真实接驾时间、订单完成时间或 `pickup_cost`。
-
-## 3. 供需紧张程度
-
-纯供需比可以作为第一层信号：
-
-```text
-supply_demand_ratio = available_drivers / pending_requests
-```
-
-解释：
-
-- ratio 高：司机相对充足。
-- ratio 低：订单相对过多，供给紧张。
-- ratio 接近 1：系统处于临界状态。
-
-但纯供需比只在虚空行走模型下比较干净。一旦引入格点地图、道路代价或拥堵，单纯的司机数和订单数不够，因为司机和订单的空间结构会显著影响可服务性。
-
-更稳妥的张力指标应该结合候选边：
-
-```text
-tension = requests_without_edges / pending_requests
-```
-
-以及：
-
-```text
-avg_candidates_per_request = candidate_edges / pending_requests
-```
-
-含义：
-
-- 无候选边 request 多：不是 k 的问题，优先扩大 radius 或增加供给。
-- 平均候选数低：局部供给紧张，k 或 radius 可能不足。
-- 候选边很多但完成率不涨：候选边冗余，k 可以降低。
-
-## 4. 区域热度与机会成本
-
-价格不应该只看本单距离，还要看司机完成本单后所在区域是否容易接到下一单。
-
-核心想法：
-
-```text
-去热门区域，司机后续更容易接下一单，本单机会成本较低。
-去冷门区域，司机后续可能空驶返回，本单机会成本较高。
-```
-
-可以定义区域热度：
-
-```text
-zone_heat(tile, time_window) = recent_pickups_near_tile
-```
-
-或者用 KD-Tree 查询某个点附近的历史 pickup 数：
-
-```text
-hotspot_score(point, radius, time_window)
-```
-
-KD-Tree 的用途：
-
-- 快速查询某个 pickup/dropoff 附近的历史订单密度。
-- 找出峰值区域，也就是高频 pickup 区。
-- 估计司机完成订单后附近再次接单的概率。
-
-初版不需要预测，只统计历史窗口：
-
-```text
-过去 N 分钟 / 同时段历史数据中，dropoff 附近 radius 范围内的 pickup 数。
-```
-
-## 5. 热区的双重影响
-
-热区不是单向利好，它有两个相反作用。
-
-第一，机会收益：
-
-```text
-订单终点靠近热区 -> 更容易接下一单 -> 本单机会成本下降
-```
-
-第二，拥堵成本：
-
-```text
-路线经过热区或高峰时段 -> 更可能慢 -> 本单服务时间上升
-```
-
-所以不能简单地说“经过热门区域就减价”或“热门区域就加价”。应该拆成两个因子：
-
-```text
-price = base_price
-      + trip_cost
-      + pickup_cost
-      + low_opportunity_penalty
-      + congestion_penalty
-      - hotspot_opportunity_discount
-```
-
-其中：
-
-- `hotspot_opportunity_discount`：终点或路线靠近高订单区时降低机会成本。
-- `low_opportunity_penalty`：终点进入冷区时增加机会成本。
-- `congestion_penalty`：高峰时段、长时间、慢速区域带来的服务成本。
-
-这样可以同时表达：
-
-```text
-热区容易接下一单，所以机会成本低。
-热区可能拥堵，所以行驶成本高。
-```
-
-最终价格取决于两个因子的净效应。
-
-## 6. 基于时间和距离的调价
-
-在虚空行走模型中，pickup cost 目前来自几何距离：
-
-```text
-pickup_cost = distance * seconds_per_distance_unit
-```
-
-后续进入格点地图或道路代价后，应逐步替换为：
-
-```text
-effective_time_cost = distance_cost + time_of_day_penalty + congestion_penalty
-```
-
-可以先用简单规则：
-
-```text
-if peak_hour:
-    congestion_penalty += route_distance * peak_factor
-
-if route_crosses_hot_tiles:
-    congestion_penalty += hot_tile_cross_count * hot_tile_penalty
-
-if dropoff_near_hotspot:
-    hotspot_opportunity_discount += hotspot_score * discount_factor
-
-if dropoff_near_cold_area:
-    low_opportunity_penalty += cold_area_penalty
-```
-
-这里仍然不是机器学习，因为所有因子都来自明确统计和手写规则。
-
-## 7. 多因子和递减收益
-
-当前 Go 实验 runner 已支持热点调价试验：
-
-- `linear`：直接使用热点因子。
-- `diminishing`：对热点因子应用分段递减收益。
-- `price_floor` / `price_cap`：限制价格因子的下限和上限。
-
-分段递减收益类似游戏数值里的护甲收益递减：
-
-```text
-0.0 - 0.3: 100% 生效
-0.3 - 0.6: 80% 生效
-0.6 - 0.9: 50% 生效
-0.9 - 1.0: 20% 生效
-```
-
-目的：
-
-- 保留热点加价趋势。
-- 避免极端热区价格因子过度放大。
-- 让策略仍然保持非机器学习、可解释、可调参。
-
-当前实验公式：
-
-```text
-price_factor = clamp(
-  1
-  + pickup_hot_weight * pickup_hotspot
-  - dropoff_hot_discount * dropoff_hotspot
-  + cold_dropoff_penalty * cold_dropoff,
-  price_floor,
-  price_cap
-)
-```
-
-实验输出关注：
-
-- `avg_price_factor`
-- `max_price_factor`
-- `hotspot_completed_revenue`
-- `hotspot_net_revenue`
-- `hotspot_net_delta`
-
-这套实验只估算价格变化对收入的影响，暂未建模价格上涨导致的需求流失。
-
-当前第一版机会成本估算已经从“只做全局热区统计”推进到“按实验 row 做 hot/cold dropoff 分组报告”。核心公式先只进入报表，不改 dispatch：
-
-```text
 opportunity_adjustment =
-  cold_dropoff_penalty * cold_dropoff
-  - hot_dropoff_discount * dropoff_hotspot
+  cold_dropoff_penalty * cold_dropoff_score
+  - hot_dropoff_discount * dropoff_hotspot_score
+
+dispatch_cost =
+  base + dispatch_opportunity_cost_scale * opportunity_adjustment
 ```
 
-其中：
+This affects greedy/MCMF matching only. It does not rewrite pickup arrival,
+completion time, or `applied_pickup_cost`.
 
-- `cold_dropoff_penalty` 默认 0.20，可通过 CLI 调整。
-- `hot_dropoff_discount` 默认 0.10，可通过 CLI 调整。
-- `cold_dropoff = 1 - dropoff_hotspot`。
-- `dropoff_hotspot` 来自 pickup tile heat side table。
+## Pricing V1
 
-`k_sweep` 当前按每个策略 row 输出：
+Pricing v1 is an explanation/reporting model. It can estimate fare, pickup
+burden, hot/cold factors, and net value for sampled orders.
 
-- `hot_dropoff_completion_rate`
-- `cold_dropoff_completion_rate`
-- `hot_dropoff_candidate_coverage_rate`
-- `cold_dropoff_candidate_coverage_rate`
-- `hot_dropoff_avg_trip_distance`
-- `cold_dropoff_avg_trip_distance`
-- `hot_dropoff_avg_pickup_cost`
-- `cold_dropoff_avg_pickup_cost`
-- `opportunity_adjustment_avg`
+It should not affect matching unless a command explicitly feeds a pricing or
+opportunity-cost factor into `dispatch_cost`.
 
-当前固定计价实验默认使用：
+## Calibration
 
-```text
-price_factor = clamp(
-  1
-  + 0.15 * pickup_hotspot
-  + 0.20 * cold_dropoff
-  - 0.10 * dropoff_hotspot,
-  0.8,
-  1.8
-)
-```
+Use `scripts/run_cost_grid_search.ps1` to rank opportunity-cost parameters.
+Treat small 120-second smoke results as evidence that the path works, not as a
+globally calibrated dispatch policy.
 
-这套计价默认只进入 Go 实验报表和抽样订单解释。若显式打开 `--dispatch-opportunity-cost-scale`，同一套 hot/cold opportunity adjustment 可以进入 C++ `dispatch_cost` 影响 greedy / MCMF 匹配；若显式打开 `--route-cost-csv`，路网 duration side table 可以作为 `dispatch_cost` 基底；`pickup_cost` 和 replay 时间线仍不变。
+## Not In Scope
 
-### Hot/Cold 固定单价验证
-
-为了验证“只看热冷区域、不看公里数”的极端定价方向，`go_experiments` 增加了 `-zone-fixed-pricing` 报表模式。这不是正式定价策略，只是压力测试一个很窄的假设：
-
-```text
-hot pickup -> hot dropoff   = base_fare * hot_hot_factor
-cold pickup -> cold dropoff = base_fare * cold_cold_factor
-other combinations          = base_fare
-```
-
-默认参数：
-
-```text
-zone_fixed_base_fare = 1.0
-hot_hot_factor = 1.2
-cold_cold_factor = 0.8
-```
-
-这个模式完全移除公里数影响：
-
-```text
-zone_fixed_possible_revenue =
-  sum(zone_fixed_base_fare * zone_factor over all requests)
-
-zone_fixed_completed_revenue =
-  zone_fixed_possible_revenue * completion_rate
-
-zone_fixed_net_delta =
-  zone_fixed_completed_revenue - estimated_completed_revenue
-```
-
-第一版不扣接驾成本，不建模需求流失，也不影响 dispatch。它只回答一个问题：如果价格只由热冷组合决定，收入量级和原距离收入相比会偏到什么程度。
-
-## 8. 当前工程状态
-
-当前已落地：
-
-- `k_sweep`：扫描候选集规模和半径。
-- `go_experiments`：补充供需比、订单里程收入、接驾成本、热点调价、hot/cold 固定单价验证和粗略净收入。
-- KD-Tree 侧表化查询：`radius_query / nearest_k -> id + distance_sq`。
-- indexed 候选边对照路径：通过 KD-Tree 查询司机 id，再从 side table 取 `DriverSnapshot`。
-- replay per-request outcome：记录候选边覆盖、派单、完成、等待和接驾成本。
-- hot/cold dropoff 分组报告：基于真实 replay outcome，而不是全局估算；可由 CSV tile 或 `--cell-stats-grid-cols` 的 CellIndex cell 提供空间口径。
-- candidate route pair export：`replay_csv_demo --candidate-routes-csv` 输出预匹配 taxi->pickup 起终点，供 `tools/route_visual_export --input-route-pairs-csv` 去重/缓存后生成 route-cost CSV。
-- `go_batch_experiments`：批量跑样本规模、候选模式、半径和 k 值。
-- `go_experiment_summary`：汇总 hot/cold completion、coverage 和推荐配置。
-- replay 耗时指标已拆分为 candidate generation、greedy matching、MCMF matching、assignment application 和 batch accounting。
-
-indexed 候选边路径暂不替换 replay 默认路径，先作为性能和正确性对照。当前已经移除每轮重建 KD-Tree 的大开销，改为 replay 内跨 batch 维护 free-driver index；但在当前数据规模下，scan + finite k 仍然更适合作为默认实验路径。
-
-## 9. 初版可实现策略
-
-第一阶段不直接做复杂价格，只做 replay 指标和参数扫描：
-
-1. 用 `-window-seconds` 生成连续时间窗口订单。
-2. 对多个 k 跑 replay。
-3. 输出 k、完成率、候选边数量、平均接驾成本。
-4. 选出满足完成率约束下的最小 k。
-
-第二阶段加入区域热度：
-
-1. 用历史 pickup 构建 KD-Tree 或 tile heat map。
-2. 对每个 request 计算 pickup 热度、dropoff 热度。
-3. 用 replay outcome 给 report 增加按策略 row 的热区 / 冷区统计。
-4. 比较去热区订单和去冷区订单的完成率、候选边覆盖率、平均里程和接驾成本。
-5. 优先使用轻量 tile/cell side table，而不是完整真实道路格点路径规划：`--cell-stats-grid-cols` 可让 pickup/dropoff heat、冷区分数、机会成本等统计来自 `CellIndex`。
-
-第三阶段加入调价因子：
-
-1. 基础价格来自距离和时间。
-2. 冷区终点增加机会成本。
-3. 热区终点降低机会成本。
-4. 热区路径和高峰时段增加拥堵成本。
-5. 默认只输出 `opportunity_adjustment` 估算；显式打开 `--dispatch-opportunity-cost-scale` 时参与 dispatch。
-6. 显式打开 `--candidate-routes-csv` 可导出候选路线对；经 `tools/route_visual_export --input-route-pairs-csv` 路由后，`--route-cost-csv` 让真实道路 duration side table 参与 `dispatch_cost`，但不写回 `pickup_cost`。
-7. 后续再 replay 对比调价前后的服务率、平均成本和未服务订单。
-
-## 10. 当前不做
-
-暂时不做：
-
-- 机器学习价格预测。
-- 把真实道路最短路 / ETA 写进 `pickup_cost`，或在 replay loop 内做实时路由 HTTP 调用。
-- 实时交通 API。
-- 神经网络热度预测。
-- 多目标复杂优化器。
-
-当前先坚持：
-
-```text
-历史订单 replay -> 规则指标 -> 参数扫描 -> 可解释调价
-```
-
-这条路线工程上更稳，也更符合非机器学习选题。
+- learned demand forecasting
+- driver acceptance or cancellation modeling
+- dynamic surge pricing as a live service
+- real-road ETA inside `pickup_cost`
+- live HTTP routing inside replay
+- region map as an implicit hard dispatch constraint

@@ -1,32 +1,34 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+Use the repo's progressive-disclosure entry path. This project keeps its active
+domain context in the files below.
 
-## Before Exploring, Read These
+## Read Order
 
-- `CONTEXT.md` at the repo root, if it exists.
-- `docs/adr/`, reading ADRs that touch the area being changed.
+1. `AGENTS.md`
+2. `README.md`
+3. `PROJECT_STATUS.md`
+4. `INDEX.md`
+5. `docs/README.md`
+6. `docs/glossary.md`
+7. The specific design document for the area being changed
 
-If these files do not exist, proceed silently. Do not flag their absence or suggest creating them upfront. The producer skill (`grill-with-docs`) creates them lazily when terms or decisions actually get resolved.
+## Vocabulary
 
-## File Structure
+Use `docs/glossary.md` for dispatch, pricing, cost, route, and spatial terms.
+If a term is missing, add it there before spreading a new name through issues,
+plans, or code comments.
 
-This repo is configured as single-context:
+## Evidence
 
-```text
-/
-|-- CONTEXT.md
-|-- docs/
-|   `-- adr/
-`-- src/
+When a change touches docs or workflow, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\project_doctor.ps1
 ```
 
-## Use the Glossary's Vocabulary
+Before homework packaging or handoff, run:
 
-When output names a domain concept in an issue title, refactor proposal, hypothesis, or test name, use the term as defined in `CONTEXT.md`.
-
-If the concept is not in the glossary yet, either reconsider whether the language belongs in the project or note the gap for `grill-with-docs`.
-
-## Flag ADR Conflicts
-
-If output contradicts an existing ADR, surface it explicitly rather than silently overriding it.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\pre_submit_check.ps1
+```

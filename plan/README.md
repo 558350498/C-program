@@ -27,5 +27,5 @@ This preserves the current replay loop while making the spatial model deeper and
 
 - Update `PROJECT_STATUS.md` when the active path or risk picture changes.
 - Update `dispatch_next_steps.md` when the next executable slice changes.
-- Keep historical presentation rationale in `docs/ppt_prompt.md` or git history.
+- Keep historical presentation rationale in git history, not in first-pass docs.
 - Turn stable plan items into GitHub Issues or PRs when that workflow is active.
